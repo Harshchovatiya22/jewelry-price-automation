@@ -204,9 +204,10 @@ async function getAllVariants(token) {
 
 function getMetafield(variant, key) {
   const metafield = variant.metafields.nodes.find(
-    (item) =>
-      item.key.toLowerCase() === key.toLowerCase()
-  );
+  (item) =>
+    item.namespace === "custom" &&
+    item.key.toLowerCase() === key.toLowerCase()
+);
 
   return metafield?.value ?? null;
 }
