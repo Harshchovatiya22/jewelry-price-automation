@@ -88,14 +88,37 @@ app.get("/api/preview", validateShopifyIdToken, async (req, res) => {
   const rates = await fetchGoldPrices();
 
   if (!rates) {
-    return res.status(503).json({ error: "Gold price data is unavailable right now." });
+    return res.status(503).json({
+      error: "Gold price data is unavailable right now."
+    });
   }
 
   try {
-    const { results, summary } = await analyzePrices(rates);
-    res.json({ results, summary, goldPrices: rates });
+    console.log("[PREVIEW] Starting Shopify price analysis...");
+
+    const { results, summary, bulkId } =
+      await analyzePrices(rates);
+
+    console.log(
+      `[PREVIEW] Completed successfully. Bulk operation: ${bulkId}`
+    );
+
+    res.json({
+      results,
+      summary,
+      goldPrices: rates,
+      bulkId
+    });
+
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error(
+      "[PREVIEW] FAILED:",
+      error
+    );
+
+    res.status(500).json({
+      error: error?.message || "Price preview failed."
+    });
   }
 });
 
