@@ -239,19 +239,47 @@ function calculatePrice({ metal, goldPrices, goldWeight, diamondCost, otherCost 
 
 function validatePriceChange(currentPrice, newPrice) {
   if (!Number.isFinite(currentPrice) || currentPrice <= 0) {
-    return { safe: false, reason: "Current Shopify price is invalid." };
-  }
-
-  const changePercent = ((newPrice - currentPrice) / currentPrice) * 100;
-
-  if (Math.abs(changePercent) > MAX_VARIANT_PRICE_CHANGE_PERCENT) {
     return {
       safe: false,
-      reason: `Price change ${changePercent.toFixed(2)}% exceeds 15% safety limit.`,
+      reason: "Current Shopify price is invalid."
     };
   }
 
-  return { safe: true, changePercent };
+  if (!Number.isFinite(newPrice) || newPrice <= 0) {
+    return {
+      safe: false,
+      reason: "Calculated price is invalid."
+    };
+  }
+
+  const changePercent =
+    ((newPrice - currentPrice) / currentPrice) * 100;
+
+  // PRICE INCREASES: unlimited by percentage safety rule.
+  if (changePercent > 0) {
+    return {
+      safe: true,
+      changePercent
+    };
+  }
+
+  // PRICE DECREASES: maximum 15% decrease allowed.
+  if (
+    changePercent < -MAX_VARIANT_PRICE_CHANGE_PERCENT
+  ) {
+    return {
+      safe: false,
+      reason:
+        `Price decrease ${changePercent.toFixed(2)}% ` +
+        `exceeds maximum allowed decrease of ` +
+        `${MAX_VARIANT_PRICE_CHANGE_PERCENT}%.`
+    };
+  }
+
+  return {
+    safe: true,
+    changePercent
+  };
 }
 
 /**
