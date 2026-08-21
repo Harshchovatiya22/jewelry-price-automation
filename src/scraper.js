@@ -240,30 +240,13 @@ async function getProducts(accessToken) {
               price
               sku
 
-              metafields(
-                identifiers: [
-                  {
-                    namespace: "custom"
-                    key: "metal"
-                  }
-                  {
-                    namespace: "custom"
-                    key: "gold_weight"
-                  }
-                  {
-                    namespace: "custom"
-                    key: "diamond_cost"
-                  }
-                  {
-                    namespace: "custom"
-                    key: "other_cost"
-                  }
-                ]
-              ) {
-                namespace
-                key
-                value
-              }
+              metafields(first: 50) {
+  nodes {
+    namespace
+    key
+    value
+  }
+}
             }
           }
         }
