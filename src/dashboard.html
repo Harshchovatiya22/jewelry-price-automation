@@ -1,0 +1,448 @@
+<!doctype html>
+<html>
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width,initial-scale=1"
+    >
+
+    <title>
+        Jewelry Price Automation
+    </title>
+
+    <meta
+        name="shopify-api-key"
+        content="79010b4cb45313b6f057a5b14cc64e71"
+    >
+
+    <script src="https://cdn.shopify.com/shopifycloud/app-bridge.js"></script>
+
+    <script src="https://cdn.shopify.com/shopifycloud/polaris.js"></script>
+
+    <script>
+
+        async function shopifyFetch(
+            url,
+            options = {}
+        ) {
+
+            const token =
+                await window.shopify.idToken();
+
+            const headers = {
+                ...(options.headers || {}),
+                Authorization:
+                    `Bearer ${token}`
+            };
+
+            return fetch(
+                url,
+                {
+                    ...options,
+                    headers
+                }
+            );
+        }
+
+
+        async function testConnection() {
+
+            const status =
+                document.getElementById(
+                    "connectionStatus"
+                );
+
+            try {
+
+                const response =
+                    await shopifyFetch(
+                        "/health"
+                    );
+
+                const data =
+                    await response.json();
+
+                if (!response.ok) {
+                    throw new Error(
+                        data.error ||
+                        "Authentication failed"
+                    );
+                }
+
+                status.textContent =
+                    `Connected securely: ${data.shop}`;
+
+            } catch (error) {
+
+                status.textContent =
+                    `Connection failed: ${error.message}`;
+            }
+        }
+
+
+        async function loadSettings() {
+
+            try {
+
+                const response =
+                    await shopifyFetch(
+                        "/api/settings"
+                    );
+
+                const settings =
+                    await response.json();
+
+                if (!response.ok) {
+                    throw new Error(
+                        settings.error ||
+                        "Failed to load settings"
+                    );
+                }
+
+
+                if (
+                    settings.currentRates
+                ) {
+
+                    const rates =
+                        settings.currentRates;
+
+                    document.getElementById(
+                        "gold-24k"
+                    ).textContent =
+                        `₹${Number(
+                            rates["24K"]
+                        ).toFixed(2)}/g`;
+
+                    document.getElementById(
+                        "gold-18k"
+                    ).textContent =
+                        `₹${Number(
+                            rates["18K"]
+                        ).toFixed(2)}/g`;
+
+                    document.getElementById(
+                        "gold-14k"
+                    ).textContent =
+                        `₹${Number(
+                            rates["14K"]
+                        ).toFixed(2)}/g`;
+
+                    document.getElementById(
+                        "gold-10k"
+                    ).textContent =
+                        `₹${Number(
+                            rates["10K"]
+                        ).toFixed(2)}/g`;
+
+                }
+
+
+                document.getElementById(
+                    "silver"
+                ).textContent =
+                    `₹${settings.silverPricePerGram}/g`;
+
+
+                document.getElementById(
+                    "making"
+                ).textContent =
+                    `${settings.makingChargePercent}%`;
+
+
+                document.getElementById(
+                    "profit"
+                ).textContent =
+                    `${settings.profitMultiplier}×`;
+
+
+                document.getElementById(
+                    "usd-rate"
+                ).textContent =
+                    settings.usdConversionRate;
+
+
+                document.getElementById(
+                    "adjustment"
+                ).textContent =
+                    `${settings.finalAdjustmentPercent}%`;
+
+
+                document.getElementById(
+                    "safety"
+                ).textContent =
+                    `${settings.maxPriceChangePercent}%`;
+
+
+                document.getElementById(
+                    "schedule"
+                ).textContent =
+                    `Every ${settings.automationIntervalHours} hours`;
+
+
+                document.getElementById(
+                    "last-run"
+                ).textContent =
+                    settings.lastUpdated
+                        ? new Date(
+                            settings.lastUpdated
+                        ).toLocaleString()
+                        : "Not run yet";
+
+            } catch (error) {
+
+                console.error(
+                    "Settings load failed:",
+                    error
+                );
+            }
+        }
+
+
+        loadSettings();
+
+    </script>
+
+</head>
+
+
+<body>
+
+    <s-page
+        heading="Jewelry Price Automation"
+    >
+
+        <s-button
+            slot="primary-action"
+            variant="primary"
+            onclick="testConnection()"
+        >
+            Test Connection
+        </s-button>
+
+
+        <s-section
+            heading="Automation Overview"
+        >
+
+            <s-stack
+                direction="inline"
+                gap="base"
+            >
+
+                <s-box>
+                    <s-text>
+                        Status
+                    </s-text>
+
+                    <s-badge tone="success">
+                        Protected
+                    </s-badge>
+                </s-box>
+
+
+                <s-box>
+                    <s-text>
+                        24K Gold
+                    </s-text>
+
+                    <s-heading id="gold-24k">
+                        Loading...
+                    </s-heading>
+                </s-box>
+
+
+                <s-box>
+                    <s-text>
+                        Silver
+                    </s-text>
+
+                    <s-heading id="silver">
+                        ₹300/g
+                    </s-heading>
+                </s-box>
+
+
+                <s-box>
+                    <s-text>
+                        Last Rate Update
+                    </s-text>
+
+                    <s-text id="last-run">
+                        Loading...
+                    </s-text>
+                </s-box>
+
+            </s-stack>
+
+        </s-section>
+
+
+        <s-section
+            heading="Current Metal Rates"
+        >
+
+            <s-stack gap="base">
+
+                <s-text>
+                    24K:
+                    <strong id="gold-24k">
+                        Loading...
+                    </strong>
+                </s-text>
+
+                <s-text>
+                    18K:
+                    <strong id="gold-18k">
+                        Loading...
+                    </strong>
+                </s-text>
+
+                <s-text>
+                    14K:
+                    <strong id="gold-14k">
+                        Loading...
+                    </strong>
+                </s-text>
+
+                <s-text>
+                    10K:
+                    <strong id="gold-10k">
+                        Loading...
+                    </strong>
+                </s-text>
+
+                <s-text>
+                    Silver:
+                    <strong id="silver">
+                        Loading...
+                    </strong>
+                </s-text>
+
+            </s-stack>
+
+        </s-section>
+
+
+        <s-section
+            heading="Pricing Formula"
+        >
+
+            <s-stack gap="base">
+
+                <s-text>
+                    Metal Cost =
+                    Metal Rate × Gold Weight
+                </s-text>
+
+                <s-text>
+                    Making Cost =
+                    Metal Cost ×
+                    <strong id="making">
+                        12%
+                    </strong>
+                </s-text>
+
+                <s-text>
+                    Base Cost =
+                    Metal Cost +
+                    Diamond Cost +
+                    Making Cost +
+                    Other Cost
+                </s-text>
+
+                <s-text>
+                    Selling Price =
+                    Base Cost ×
+                    <strong id="profit">
+                        1.9×
+                    </strong>
+                </s-text>
+
+                <s-text>
+                    Final USD Price =
+                    (Selling Price ÷
+                    <strong id="usd-rate">
+                        97
+                    </strong>)
+                    × 1.04
+                </s-text>
+
+            </s-stack>
+
+        </s-section>
+
+
+        <s-section
+            heading="Safety Controls"
+        >
+
+            <s-stack gap="base">
+
+                <s-text>
+                    Maximum allowed price change:
+                    <strong id="safety">
+                        15%
+                    </strong>
+                </s-text>
+
+                <s-badge tone="success">
+                    Price Protection Active
+                </s-badge>
+
+            </s-stack>
+
+        </s-section>
+
+
+        <s-section
+            heading="Automation Schedule"
+        >
+
+            <s-stack gap="base">
+
+                <s-text>
+                    Automatic pricing:
+                    <strong id="schedule">
+                        Every 3 hours
+                    </strong>
+                </s-text>
+
+                <s-badge tone="success">
+                    Scheduled
+                </s-badge>
+
+            </s-stack>
+
+        </s-section>
+
+
+        <s-section
+            heading="Connection"
+        >
+
+            <s-stack gap="base">
+
+                <s-text id="connectionStatus">
+                    Not tested yet
+                </s-text>
+
+                <s-button
+                    onclick="testConnection()"
+                >
+                    Test Secure Connection
+                </s-button>
+
+            </s-stack>
+
+        </s-section>
+
+    </s-page>
+
+</body>
+
+</html>

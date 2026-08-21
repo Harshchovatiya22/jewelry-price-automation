@@ -15,27 +15,17 @@ const METAFIELD_NAMESPACE = "custom";
 
 const SILVER_PRICE_PER_GRAM = 300;
 
+const MAKING_CHARGE_PERCENT = 0.12;
+
 const PROFIT_MULTIPLIER = 1.9;
 
 const USD_CONVERSION_RATE = 97;
 
-const MAKING_CHARGE_PERCENT = 0.12;
-
-/*
-|--------------------------------------------------------------------------
-| SAFETY
-|--------------------------------------------------------------------------
-*/
+const FINAL_ADJUSTMENT = 1.04;
 
 const MAX_VARIANT_PRICE_CHANGE_PERCENT = 15;
 
 const MAX_PRICE_USD = 1000000;
-
-/*
-|--------------------------------------------------------------------------
-| ENVIRONMENT
-|--------------------------------------------------------------------------
-*/
 
 if (
   !SHOPIFY_STORE_DOMAIN ||
@@ -47,12 +37,6 @@ if (
   );
 }
 
-/*
-|--------------------------------------------------------------------------
-| SHOPIFY AUTHENTICATION
-|--------------------------------------------------------------------------
-*/
-
 async function getAccessToken() {
   const response = await fetch(
     `https://${SHOPIFY_STORE_DOMAIN}/admin/oauth/access_token`,
@@ -60,39 +44,32 @@ async function getAccessToken() {
       method: "POST",
 
       headers: {
-        "Content-Type": "application/json"
+        "Content-Type":
+          "application/x-www-form-urlencoded"
       },
 
-      body: JSON.stringify({
+      body: new URLSearchParams({
+        grant_type: "client_credentials",
         client_id: SHOPIFY_CLIENT_ID,
-        client_secret: SHOPIFY_CLIENT_SECRET,
-        grant_type: "client_credentials"
+        client_secret: SHOPIFY_CLIENT_SECRET
       })
     }
   );
 
-  if (!response.ok) {
-    throw new Error(
-      `Shopify authentication failed: ${response.status} ${await response.text()}`
-    );
-  }
+  const data =
+    await response.json();
 
-  const data = await response.json();
-
-  if (!data.access_token) {
+  if (
+    !response.ok ||
+    !data.access_token
+  ) {
     throw new Error(
-      "Shopify access token was not returned."
+      `Shopify authentication failed: ${response.status}`
     );
   }
 
   return data.access_token;
 }
-
-/*
-|--------------------------------------------------------------------------
-| SHOPIFY GRAPHQL
-|--------------------------------------------------------------------------
-*/
 
 async function shopifyGraphQL(
   token,
@@ -116,26 +93,96 @@ async function shopifyGraphQL(
     }
   );
 
-  const data = await response.json();
+  const data =
+    await response.json();
 
-  if (!response.ok) {
+  if (
+    !response.ok ||
+    data.errors?.length
+  ) {
     throw new Error(
-      `Shopify API HTTP error ${response.status}: ${JSON.stringify(data)}`
-    );
-  }
-
-  if (data.errors?.length) {
-    throw new Error(
-      `Shopify GraphQL error: ${JSON.stringify(data.errors)}`
+      `Shopify GraphQL error: ${JSON.stringify(
+        data.errors || data
+      )}`
     );
   }
 
   return data.data;
 }
 
+async function getGoldPrices() {
+  const file =
+    await fs.readFile(
+      "gold-prices.json",
+      "utf8"
+    );
+
+  const prices =
+    JSON.parse(file);
+
+  for (
+    const key of [
+      "24K",
+      "18K",
+      "14K",
+      "10K"
+    ]
+  ) {
+    if (
+      !Number.isFinite(prices[key]) ||
+      prices[key] <= 0
+    ) {
+      throw new Error(
+        `Invalid ${key} gold price.`
+      );
+    }
+  }
+
+  const expected18 =
+    prices["24K"] * 18 / 24;
+
+  const expected14 =
+    prices["24K"] * 14 / 24;
+
+  const expected10 =
+    prices["24K"] * 10 / 24;
+
+  if (
+    Math.abs(
+      prices["18K"] - expected18
+    ) > 0.01
+  ) {
+    throw new Error(
+      "18K purity validation failed."
+    );
+  }
+
+  if (
+    Math.abs(
+      prices["14K"] - expected14
+    ) > 0.01
+  ) {
+    throw new Error(
+      "14K purity validation failed."
+    );
+  }
+
+  if (
+    Math.abs(
+      prices["10K"] - expected10
+    ) > 0.01
+  ) {
+    throw new Error(
+      "10K purity validation failed."
+    );
+  }
+
+  return prices;
+}
+
 /*
 |--------------------------------------------------------------------------
-| START BULK OPERATION
+| SHOPIFY BULK READ
 |--------------------------------------------------------------------------
 */
 
@@ -158,7 +205,10 @@ async function startBulkOperation(token) {
                   title
                 }
 
-                metafields(namespace: "custom", first: 10) {
+                metafields(
+                  namespace: "custom"
+                  first: 10
+                ) {
                   edges {
                     node {
                       namespace
@@ -196,42 +246,38 @@ async function startBulkOperation(token) {
     data.bulkOperationRunQuery;
 
   if (
-    result.userErrors &&
-    result.userErrors.length > 0
+    result.userErrors?.length
   ) {
     throw new Error(
-      `Bulk operation failed to start: ${JSON.stringify(
+      JSON.stringify(
         result.userErrors
-      )}`
+      )
     );
   }
 
-  if (!result.bulkOperation?.id) {
+  if (
+    !result.bulkOperation?.id
+  ) {
     throw new Error(
-      "Shopify did not return a bulk operation ID."
+      "Shopify bulk operation did not start."
     );
   }
 
   return result.bulkOperation.id;
 }
 
-/*
-|--------------------------------------------------------------------------
-| WAIT FOR BULK OPERATION
-|--------------------------------------------------------------------------
-*/
-
 async function waitForBulkOperation(token) {
   const query = `
-    query {
-      currentBulkOperation {
-        id
-        status
-        errorCode
-        url
-      }
+  query {
+    currentBulkOperation(type: QUERY) {
+      id
+      type
+      status
+      errorCode
+      url
     }
-  `;
+  }
+`;
 
   while (true) {
     const data =
@@ -254,11 +300,12 @@ async function waitForBulkOperation(token) {
     );
 
     if (
-      operation.status === "COMPLETED"
+      operation.status ===
+      "COMPLETED"
     ) {
       if (!operation.url) {
         throw new Error(
-          "Bulk operation completed but no result URL was returned."
+          "Bulk operation has no result URL."
         );
       }
 
@@ -271,65 +318,45 @@ async function waitForBulkOperation(token) {
     ) {
       throw new Error(
         `Bulk operation ${operation.status}: ${
-          operation.errorCode || "unknown error"
+          operation.errorCode || "unknown"
         }`
       );
     }
 
     await new Promise(
-      (resolve) => setTimeout(resolve, 3000)
+      resolve =>
+        setTimeout(resolve, 3000)
     );
   }
 }
 
-/*
-|--------------------------------------------------------------------------
-| DOWNLOAD + PARSE BULK RESULT
-|--------------------------------------------------------------------------
-*/
-
-async function downloadAndParseVariants(url) {
-  if (!url) {
-    return [];
-  }
-
+async function downloadVariants(url) {
   const response =
     await fetch(url);
 
   if (!response.ok) {
     throw new Error(
-      `Failed to download Shopify bulk result: ${response.status}`
+      `Failed to download bulk result: ${response.status}`
     );
   }
 
   const text =
     await response.text();
 
-  const lines =
-    text
-      .trim()
-      .split("\n")
-      .filter(Boolean);
-
-  const variantsById =
+  const variants =
     new Map();
 
-  for (const line of lines) {
-    let obj;
+  for (
+    const line of text
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+  ) {
+    const obj =
+      JSON.parse(line);
 
-    try {
-      obj = JSON.parse(line);
-    } catch {
-      throw new Error(
-        "Shopify bulk result contained invalid JSON."
-      );
-    }
-
-    /*
-     * Variant object
-     */
     if (!obj.__parentId) {
-      variantsById.set(
+      variants.set(
         obj.id,
         {
           id: obj.id,
@@ -338,159 +365,40 @@ async function downloadAndParseVariants(url) {
           sku: obj.sku,
 
           product:
-            obj.product || {
-              id: null,
-              title: "Unknown Product"
-            },
+            obj.product,
 
           metafields: {
             nodes: []
           }
         }
       );
+    } else {
+      const variant =
+        variants.get(
+          obj.__parentId
+        );
 
-      continue;
-    }
-
-    /*
-     * Metafield object
-     */
-    if (
-      variantsById.has(
-        obj.__parentId
-      )
-    ) {
-      variantsById
-        .get(obj.__parentId)
-        .metafields.nodes.push({
-          namespace:
-            obj.namespace ||
-            METAFIELD_NAMESPACE,
-
-          key: obj.key,
-
-          value: obj.value
-        });
+      if (variant) {
+        variant.metafields.nodes.push(
+          {
+            namespace:
+              obj.namespace,
+            key: obj.key,
+            value: obj.value
+          }
+        );
+      }
     }
   }
 
-  return Array.from(
-    variantsById.values()
-  );
+  return [
+    ...variants.values()
+  ];
 }
 
 /*
 |--------------------------------------------------------------------------
-| READ GOLD PRICES
-|--------------------------------------------------------------------------
-*/
-
-async function getGoldPrices() {
-  let file;
-
-  try {
-    file =
-      await fs.readFile(
-        "gold-prices.json",
-        "utf8"
-      );
-  } catch {
-    throw new Error(
-      "gold-prices.json was not created by the scraper."
-    );
-  }
-
-  let prices;
-
-  try {
-    prices =
-      JSON.parse(file);
-  } catch {
-    throw new Error(
-      "gold-prices.json contains invalid JSON."
-    );
-  }
-
-  validateGoldPrices(
-    prices
-  );
-
-  return prices;
-}
-
-/*
-|--------------------------------------------------------------------------
-| VALIDATE GOLD PRICES
-|--------------------------------------------------------------------------
-*/
-
-function validateGoldPrices(prices) {
-  const required =
-    [
-      "24K",
-      "18K",
-      "14K",
-      "10K"
-    ];
-
-  for (const key of required) {
-    if (
-      typeof prices[key] !== "number" ||
-      !Number.isFinite(prices[key]) ||
-      prices[key] <= 0
-    ) {
-      throw new Error(
-        `Invalid ${key} gold price.`
-      );
-    }
-  }
-
-  const expected18 =
-    prices["24K"] * 18 / 24;
-
-  const expected14 =
-    prices["24K"] * 14 / 24;
-
-  const expected10 =
-    prices["24K"] * 10 / 24;
-
-  const tolerance =
-    0.01;
-
-  if (
-    Math.abs(
-      prices["18K"] - expected18
-    ) > tolerance
-  ) {
-    throw new Error(
-      "18K price failed purity validation."
-    );
-  }
-
-  if (
-    Math.abs(
-      prices["14K"] - expected14
-    ) > tolerance
-  ) {
-    throw new Error(
-      "14K price failed purity validation."
-    );
-  }
-
-  if (
-    Math.abs(
-      prices["10K"] - expected10
-    ) > tolerance
-  ) {
-    throw new Error(
-      "10K price failed purity validation."
-    );
-  }
-}
-
-/*
-|--------------------------------------------------------------------------
-| METAFIELD HELPER
+| METAFIELDS
 |--------------------------------------------------------------------------
 */
 
@@ -498,25 +406,17 @@ function getMetafield(
   variant,
   key
 ) {
-  const metafield =
+  const field =
     variant.metafields.nodes.find(
-      (item) =>
+      item =>
         item.namespace ===
           METAFIELD_NAMESPACE &&
         item.key.toLowerCase() ===
           key.toLowerCase()
     );
 
-  return (
-    metafield?.value ?? null
-  );
+  return field?.value ?? null;
 }
-
-/*
-|--------------------------------------------------------------------------
-| NUMBER VALIDATION
-|--------------------------------------------------------------------------
-*/
 
 function numberFromMetafield(
   value,
@@ -540,49 +440,43 @@ function numberFromMetafield(
     number < 0
   ) {
     throw new Error(
-      `${name} metafield contains an invalid number: ${value}`
+      `${name} metafield is invalid.`
     );
   }
 
   return number;
 }
 
-/*
-|--------------------------------------------------------------------------
-| DETECT METAL
-|--------------------------------------------------------------------------
-*/
-
-function detectMetal(metal) {
-  if (!metal) {
+function detectMetal(value) {
+  if (!value) {
     return null;
   }
 
-  const normalized =
-    String(metal)
+  const metal =
+    String(value)
       .trim()
       .toUpperCase();
 
   if (
-    normalized.includes("SILVER")
+    metal.includes("SILVER")
   ) {
     return "SILVER";
   }
 
   if (
-    /\b18K\b/.test(normalized)
+    /\b18K\b/.test(metal)
   ) {
     return "18K";
   }
 
   if (
-    /\b14K\b/.test(normalized)
+    /\b14K\b/.test(metal)
   ) {
     return "14K";
   }
 
   if (
-    /\b10K\b/.test(normalized)
+    /\b10K\b/.test(metal)
   ) {
     return "10K";
   }
@@ -592,7 +486,7 @@ function detectMetal(metal) {
 
 /*
 |--------------------------------------------------------------------------
-| CALCULATE FINAL PRICE
+| PRICE FORMULA
 |--------------------------------------------------------------------------
 */
 
@@ -603,44 +497,26 @@ function calculatePrice({
   diamondCost,
   otherCost
 }) {
-  let metalRate;
-
-  if (metal === "SILVER") {
-    metalRate =
-      SILVER_PRICE_PER_GRAM;
-  } else {
-    metalRate =
-      goldPrices[metal];
-  }
+  const metalRate =
+    metal === "SILVER"
+      ? SILVER_PRICE_PER_GRAM
+      : goldPrices[metal];
 
   if (
     !Number.isFinite(metalRate) ||
     metalRate <= 0
   ) {
     throw new Error(
-      `No valid metal rate available for ${metal}.`
+      `Invalid metal rate for ${metal}.`
     );
   }
 
-  /*
-   * Metal Cost
-   */
-
   const metalCost =
-    goldWeight *
-    metalRate;
-
-  /*
-   * Making Cost = 12% of Metal Cost
-   */
+    goldWeight * metalRate;
 
   const makingCost =
     metalCost *
     MAKING_CHARGE_PERCENT;
-
-  /*
-   * Base Cost
-   */
 
   const baseCost =
     metalCost +
@@ -648,20 +524,29 @@ function calculatePrice({
     makingCost +
     otherCost;
 
-  /*
-   * Selling Price INR
-   */
-
   const sellingPriceINR =
     baseCost *
     PROFIT_MULTIPLIER;
 
-  /*
-   * Selling Price USD
-   */
-
   const sellingPriceUSD =
-  (sellingPriceINR / USD_CONVERSION_RATE) * 1.04;
+    (
+      sellingPriceINR /
+      USD_CONVERSION_RATE
+    ) *
+    FINAL_ADJUSTMENT;
+
+  if (
+    !Number.isFinite(
+      sellingPriceUSD
+    ) ||
+    sellingPriceUSD <= 0 ||
+    sellingPriceUSD >
+      MAX_PRICE_USD
+  ) {
+    throw new Error(
+      "Calculated price failed safety validation."
+    );
+  }
 
   return {
     metalRate,
@@ -675,40 +560,6 @@ function calculatePrice({
 
 /*
 |--------------------------------------------------------------------------
-| CALCULATED PRICE SAFETY
-|--------------------------------------------------------------------------
-*/
-
-function validateCalculatedPrice(
-  result
-) {
-  if (
-    !Number.isFinite(
-      result.sellingPriceINR
-    ) ||
-    !Number.isFinite(
-      result.sellingPriceUSD
-    ) ||
-    result.sellingPriceINR <= 0 ||
-    result.sellingPriceUSD <= 0
-  ) {
-    throw new Error(
-      "Calculated price failed safety validation."
-    );
-  }
-
-  if (
-    result.sellingPriceUSD >
-    MAX_PRICE_USD
-  ) {
-    throw new Error(
-      "Calculated price exceeds emergency safety limit."
-    );
-  }
-}
-
-/*
-|--------------------------------------------------------------------------
 | PRICE CHANGE SAFETY
 |--------------------------------------------------------------------------
 */
@@ -718,26 +569,22 @@ function validatePriceChange(
   newPrice
 ) {
   if (
-    !Number.isFinite(currentPrice) ||
+    !Number.isFinite(
+      currentPrice
+    ) ||
     currentPrice <= 0
   ) {
-    throw new Error(
-      "Current Shopify price is invalid."
-    );
-  }
-
-  if (
-    !Number.isFinite(newPrice) ||
-    newPrice <= 0
-  ) {
-    throw new Error(
-      "Calculated Shopify price is invalid."
-    );
+    return {
+      safe: false,
+      reason:
+        "Current Shopify price is invalid."
+    };
   }
 
   const changePercent =
     (
-      (newPrice - currentPrice) /
+      (newPrice -
+        currentPrice) /
       currentPrice
     ) * 100;
 
@@ -745,12 +592,17 @@ function validatePriceChange(
     Math.abs(changePercent) >
     MAX_VARIANT_PRICE_CHANGE_PERCENT
   ) {
-    throw new Error(
-      `Price change ${changePercent.toFixed(2)}% exceeds ${MAX_VARIANT_PRICE_CHANGE_PERCENT}% safety limit.`
-    );
+    return {
+      safe: false,
+      reason:
+        `Price change ${changePercent.toFixed(2)}% exceeds 15% safety limit.`
+    };
   }
 
-  return changePercent;
+  return {
+    safe: true,
+    changePercent
+  };
 }
 
 /*
@@ -772,16 +624,6 @@ async function main() {
     "======================================"
   );
 
-  /*
-  |--------------------------------------------------------------------------
-  | AUTHENTICATE
-  |--------------------------------------------------------------------------
-  */
-
-  console.log(
-    "\n[1] Authenticating Shopify..."
-  );
-
   const token =
     await getAccessToken();
 
@@ -789,56 +631,26 @@ async function main() {
     "Shopify authentication successful."
   );
 
-  /*
-  |--------------------------------------------------------------------------
-  | GOLD PRICES
-  |--------------------------------------------------------------------------
-  */
-
-  console.log(
-    "\n[2] Reading validated gold prices..."
-  );
-
   const goldPrices =
     await getGoldPrices();
 
   console.log(
-    `24K = ₹${goldPrices["24K"]}/g`
+    "\nValidated metal rates:"
   );
+
+  console.log(goldPrices);
 
   console.log(
-    `18K = ₹${goldPrices["18K"]}/g`
+    "\nStarting Shopify bulk read..."
   );
 
-  console.log(
-    `14K = ₹${goldPrices["14K"]}/g`
-  );
-
-  console.log(
-    `10K = ₹${goldPrices["10K"]}/g`
-  );
-
-  console.log(
-    `Silver = ₹${SILVER_PRICE_PER_GRAM}/g`
-  );
-
-  /*
-  |--------------------------------------------------------------------------
-  | BULK READ
-  |--------------------------------------------------------------------------
-  */
-
-  console.log(
-    "\n[3] Starting Shopify bulk read..."
-  );
-
-  const bulkOperationId =
+  const bulkId =
     await startBulkOperation(
       token
     );
 
   console.log(
-    `Bulk operation started: ${bulkOperationId}`
+    `Bulk operation started: ${bulkId}`
   );
 
   const resultUrl =
@@ -846,16 +658,8 @@ async function main() {
       token
     );
 
-  console.log(
-    "Bulk operation completed."
-  );
-
-  console.log(
-    "\nDownloading Shopify catalog..."
-  );
-
   const variants =
-    await downloadAndParseVariants(
+    await downloadVariants(
       resultUrl
     );
 
@@ -863,36 +667,26 @@ async function main() {
     `Found ${variants.length} variant(s).`
   );
 
-  /*
-  |--------------------------------------------------------------------------
-  | PROCESS
-  |--------------------------------------------------------------------------
-  */
-
   let processed = 0;
-
   let skipped = 0;
+
+  const reasons = {};
 
   for (
     const variant of variants
   ) {
     try {
-      const metalValue =
-        getMetafield(
-          variant,
-          "metal"
-        );
-
       const metal =
         detectMetal(
-          metalValue
+          getMetafield(
+            variant,
+            "metal"
+          )
         );
 
       if (!metal) {
         throw new Error(
-          `Unsupported or missing metal: ${
-            metalValue || "missing"
-          }`
+          "Missing or unsupported metal."
         );
       }
 
@@ -932,126 +726,41 @@ async function main() {
           otherCost
         });
 
-      validateCalculatedPrice(
-        result
-      );
-
-      const proposedPrice =
+      const newPrice =
         Number(
-          result.sellingPriceUSD.toFixed(2)
+          result.sellingPriceUSD
+            .toFixed(2)
         );
 
-      const currentPrice =
-        Number(
-          variant.price
-        );
-
-      const changePercent =
+      const safety =
         validatePriceChange(
-          currentPrice,
-          proposedPrice
+          Number(variant.price),
+          newPrice
         );
 
-      console.log(
-        "\n--------------------------------------"
-      );
-
-      console.log(
-        `Product: ${variant.product?.title || "Unknown"}`
-      );
-
-      console.log(
-        `Variant: ${variant.title}`
-      );
-
-      console.log(
-        `SKU: ${variant.sku || "N/A"}`
-      );
-
-      console.log(
-        `Metal: ${metal}`
-      );
-
-      console.log(
-        `Gold Weight: ${goldWeight} g`
-      );
-
-      console.log(
-        `Diamond Cost: ₹${diamondCost}`
-      );
-
-      console.log(
-        `Other Cost: ₹${otherCost}`
-      );
-
-      console.log(
-        `Metal Rate: ₹${result.metalRate.toFixed(2)}/g`
-      );
-
-      console.log(
-        `Metal Cost: ₹${result.metalCost.toFixed(2)}`
-      );
-
-      console.log(
-        `Making Cost (12%): ₹${result.makingCost.toFixed(2)}`
-      );
-
-      console.log(
-        `Base Cost: ₹${result.baseCost.toFixed(2)}`
-      );
-
-      console.log(
-        `PROPOSED INR PRICE: ₹${result.sellingPriceINR.toFixed(2)}`
-      );
-
-      console.log(
-        `CURRENT SHOPIFY PRICE: $${currentPrice.toFixed(2)}`
-      );
-
-      console.log(
-        `PROPOSED USD PRICE: $${proposedPrice.toFixed(2)}`
-      );
-
-      console.log(
-        `PRICE CHANGE: ${changePercent.toFixed(2)}%`
-      );
-
-      console.log(
-        "ACTION: DRY RUN — NO UPDATE"
-      );
+      if (!safety.safe) {
+        throw new Error(
+          safety.reason
+        );
+      }
 
       processed++;
+
+      /*
+       * Do NOT print 40,000 successful
+       * variants to GitHub logs.
+       */
 
     } catch (error) {
       skipped++;
 
-      console.log(
-        "\n--------------------------------------"
-      );
+      const reason =
+        error.message;
 
-      console.log(
-        `SKIPPED: ${variant.product?.title || "Unknown"}`
-      );
-
-      console.log(
-        `Variant: ${variant.title}`
-      );
-
-      console.log(
-        `Reason: ${error.message}`
-      );
-
-      console.log(
-        "ACTION: NO UPDATE"
-      );
+      reasons[reason] =
+        (reasons[reason] || 0) + 1;
     }
   }
-
-  /*
-  |--------------------------------------------------------------------------
-  | FINAL RESULT
-  |--------------------------------------------------------------------------
-  */
 
   console.log(
     "\n======================================"
@@ -1066,12 +775,22 @@ async function main() {
   );
 
   console.log(
-    `Processed: ${processed}`
+    `Total variants: ${variants.length}`
   );
 
   console.log(
-    `Skipped: ${skipped}`
+    `Safe to update: ${processed}`
   );
+
+  console.log(
+    `Blocked/skipped: ${skipped}`
+  );
+
+  console.log(
+    "\nSkip reasons:"
+  );
+
+  console.log(reasons);
 
   console.log(
     "\nSHOPIFY PRICES WERE NOT CHANGED."
