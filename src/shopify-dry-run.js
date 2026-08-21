@@ -225,7 +225,8 @@ function calculatePrice({ metal, goldPrices, goldWeight, diamondCost, otherCost 
   }
 
   const metalCost = goldWeight * metalRate;
-  const makingCost = metalCost * MAKING_CHARGE_PERCENT;
+  const makingCost =
+  goldWeight * 1500;
   const baseCost = metalCost + diamondCost + makingCost + otherCost;
   const sellingPriceINR = baseCost * PROFIT_MULTIPLIER;
   const sellingPriceUSD = (sellingPriceINR / USD_CONVERSION_RATE) * FINAL_ADJUSTMENT;
