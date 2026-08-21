@@ -24,6 +24,8 @@ const PROFIT_MULTIPLIER = 1.9;
 const USD_CONVERSION_RATE = 97;
 const MAKING_CHARGE_PERCENT = 0.12;
 
+const SILVER_PRICE_PER_GRAM = 300;
+
 /*
 |--------------------------------------------------------------------------
 | SAFETY SETTINGS
@@ -46,7 +48,7 @@ const METAFIELDS = {
 
 /*
 |--------------------------------------------------------------------------
-| ENVIRONMENT CHECK
+| ENVIRONMENT
 |--------------------------------------------------------------------------
 */
 
@@ -136,13 +138,14 @@ function calculatePurityRates(price24K) {
     "10K": price24K * 10 / 24,
     "14K": price24K * 14 / 24,
     "18K": price24K * 18 / 24,
-    "24K": price24K
+    "24K": price24K,
+    "SILVER": SILVER_PRICE_PER_GRAM
   };
 }
 
 /*
 |--------------------------------------------------------------------------
-| SHOPIFY ACCESS TOKEN
+| SHOPIFY AUTHENTICATION
 |--------------------------------------------------------------------------
 */
 
@@ -219,7 +222,7 @@ async function shopifyGraphQL(
 
 /*
 |--------------------------------------------------------------------------
-| GET PRODUCTS + VARIANTS + METAFIELDS
+| GET PRODUCTS + VARIANT METAFIELDS
 |--------------------------------------------------------------------------
 */
 
@@ -241,20 +244,20 @@ async function getProducts(accessToken) {
               metafields(
                 identifiers: [
                   {
-                    namespace: "${METAFIELD_NAMESPACE}"
-                    key: "${METAFIELDS.metal}"
+                    namespace: "custom"
+                    key: "metal"
                   }
                   {
-                    namespace: "${METAFIELD_NAMESPACE}"
-                    key: "${METAFIELDS.goldWeight}"
+                    namespace: "custom"
+                    key: "gold_weight"
                   }
                   {
-                    namespace: "${METAFIELD_NAMESPACE}"
-                    key: "${METAFIELDS.diamondCost}"
+                    namespace: "custom"
+                    key: "diamond_cost"
                   }
                   {
-                    namespace: "${METAFIELD_NAMESPACE}"
-                    key: "${METAFIELDS.otherCost}"
+                    namespace: "custom"
+                    key: "other_cost"
                   }
                 ]
               ) {
@@ -300,17 +303,20 @@ function getMetafield(
 
 /*
 |--------------------------------------------------------------------------
-| PURITY DETECTION
+| DETECT METAL
 |--------------------------------------------------------------------------
 */
 
-function detectPurity(metal) {
+function detectMetal(metal) {
   if (!metal) return null;
 
   const normalized =
     String(metal)
       .trim()
       .toUpperCase();
+
+  if (normalized.includes("SILVER"))
+    return "SILVER";
 
   if (/\b18K\b/.test(normalized))
     return "18K";
@@ -336,7 +342,10 @@ function parsePositiveNumber(
 ) {
   const number = Number(value);
 
-  if (!Number.isFinite(number) || number < 0) {
+  if (
+    !Number.isFinite(number) ||
+    number < 0
+  ) {
     throw new Error(
       `Invalid ${fieldName}: ${value}`
     );
@@ -352,23 +361,32 @@ function parsePositiveNumber(
 */
 
 function calculateSellingPrice({
-  purity,
+  metal,
   goldWeight,
   diamondCost,
   otherCost,
-  purityRates
+  metalRates
 }) {
   const metalRate =
-    purityRates[purity];
+    metalRates[metal];
 
-  if (!metalRate) {
+  if (
+    !Number.isFinite(metalRate) ||
+    metalRate <= 0
+  ) {
     throw new Error(
-      `No gold rate available for ${purity}`
+      `No valid metal rate available for ${metal}.`
     );
   }
 
   /*
    * Metal Cost
+   *
+   * Gold:
+   * weight × calculated purity rate
+   *
+   * Silver:
+   * weight × ₹300
    */
 
   const metalCost =
@@ -377,7 +395,7 @@ function calculateSellingPrice({
   /*
    * Making Cost
    *
-   * 12% of Metal Cost
+   * 12% of metal cost
    */
 
   const makingCost =
@@ -394,14 +412,14 @@ function calculateSellingPrice({
     otherCost;
 
   /*
-   * Profit
+   * Selling Price INR
    */
 
   const sellingPriceINR =
     baseCost * PROFIT_MULTIPLIER;
 
   /*
-   * INR -> USD
+   * Convert INR → USD
    */
 
   const sellingPriceUSD =
@@ -429,7 +447,7 @@ function calculateSellingPrice({
 
 /*
 |--------------------------------------------------------------------------
-| PRICE CHANGE SAFETY CHECK
+| PRICE CHANGE SAFETY
 |--------------------------------------------------------------------------
 */
 
@@ -443,7 +461,8 @@ function validatePriceChange(
   ) {
     return {
       safe: false,
-      reason: "Current Shopify price is invalid."
+      reason:
+        "Current Shopify price is invalid."
     };
   }
 
@@ -453,7 +472,8 @@ function validatePriceChange(
   ) {
     return {
       safe: false,
-      reason: "Calculated price is invalid."
+      reason:
+        "Calculated price is invalid."
     };
   }
 
@@ -482,7 +502,7 @@ function validatePriceChange(
 
 /*
 |--------------------------------------------------------------------------
-| UPDATE VARIANTS
+| UPDATE SHOPIFY VARIANTS
 |--------------------------------------------------------------------------
 */
 
@@ -568,7 +588,7 @@ async function main() {
   validateEnvironment();
 
   /*
-   * 1. FETCH 24K
+   * FETCH 24K
    */
 
   console.log(
@@ -583,30 +603,34 @@ async function main() {
   );
 
   /*
-   * 2. CALCULATE PURITIES
+   * CALCULATE ALL METAL RATES
    */
 
-  const purityRates =
+  const metalRates =
     calculatePurityRates(
       price24K
     );
 
-  console.log("\nCalculated rates:");
+  console.log("\nMETAL RATES:");
 
   console.log(
-    `18K = ₹${purityRates["18K"].toFixed(2)}`
+    `18K = ₹${metalRates["18K"].toFixed(2)}/g`
   );
 
   console.log(
-    `14K = ₹${purityRates["14K"].toFixed(2)}`
+    `14K = ₹${metalRates["14K"].toFixed(2)}/g`
   );
 
   console.log(
-    `10K = ₹${purityRates["10K"].toFixed(2)}`
+    `10K = ₹${metalRates["10K"].toFixed(2)}/g`
+  );
+
+  console.log(
+    `Silver = ₹${metalRates["SILVER"].toFixed(2)}/g`
   );
 
   /*
-   * 3. AUTHENTICATE
+   * SHOPIFY AUTH
    */
 
   console.log(
@@ -621,7 +645,7 @@ async function main() {
   );
 
   /*
-   * 4. READ PRODUCTS
+   * READ PRODUCTS
    */
 
   console.log(
@@ -638,7 +662,7 @@ async function main() {
   );
 
   /*
-   * 5. PREPARE ALL PRICE CHANGES
+   * PREPARE ALL UPDATES
    */
 
   console.log(
@@ -657,26 +681,26 @@ async function main() {
     for (const variant of product.variants.nodes) {
       checked++;
 
-      const metal =
+      const metalValue =
         getMetafield(
           variant.metafields,
           METAFIELDS.metal
         );
 
+      const metal =
+        detectMetal(metalValue);
+
       /*
-       * Silver / unsupported metals are skipped.
+       * Unsupported/missing metal
        */
 
-      const purity =
-        detectPurity(metal);
-
-      if (!purity) {
+      if (!metal) {
         console.log(
           `SKIP: ${product.title} / ${variant.title}`
         );
 
         console.log(
-          `  Metal: ${metal || "missing"}`
+          `Metal: ${metalValue || "missing/unsupported"}`
         );
 
         skipped++;
@@ -713,11 +737,11 @@ async function main() {
 
       const calculated =
         calculateSellingPrice({
-          purity,
+          metal,
           goldWeight,
           diamondCost,
           otherCost,
-          purityRates
+          metalRates
         });
 
       const newPrice =
@@ -748,11 +772,15 @@ async function main() {
       );
 
       console.log(
-        `Metal: ${purity}`
+        `Metal: ${metal}`
       );
 
       console.log(
-        `Gold Weight: ${goldWeight}g`
+        `Metal Rate: ₹${calculated.metalRate.toFixed(2)}/g`
+      );
+
+      console.log(
+        `Weight: ${goldWeight}g`
       );
 
       console.log(
@@ -806,7 +834,7 @@ async function main() {
   }
 
   /*
-   * 6. FINAL SAFETY CHECK
+   * FINAL SAFETY CHECK
    */
 
   console.log(
@@ -822,15 +850,11 @@ async function main() {
   );
 
   console.log(
-    `Products prepared for update: ${updatesByProduct.size}`
+    `Products prepared: ${updatesByProduct.size}`
   );
 
   /*
-   * IMPORTANT:
-   *
-   * At this point ALL prices have been validated.
-   *
-   * Now we actually update Shopify.
+   * UPDATE SHOPIFY
    */
 
   console.log(
@@ -857,7 +881,7 @@ async function main() {
   }
 
   /*
-   * FINAL RESULT
+   * COMPLETE
    */
 
   console.log(
@@ -877,15 +901,15 @@ async function main() {
   );
 
   console.log(
+    `Silver: ₹${SILVER_PRICE_PER_GRAM.toFixed(2)}/g`
+  );
+
+  console.log(
     `Variants updated: ${updated}`
   );
 
   console.log(
     `Variants skipped: ${skipped}`
-  );
-
-  console.log(
-    "All validated Shopify updates completed."
   );
 
   console.log(
