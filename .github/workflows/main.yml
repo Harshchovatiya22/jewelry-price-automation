@@ -2,6 +2,11 @@ name: Jewelry Price Automation
 
 on:
   workflow_dispatch:
+    inputs:
+      confirm_live:
+        description: "Type LIVE to enable Shopify price updates"
+        required: true
+        default: "NO"
 
 concurrency:
   group: jewelry-price-automation
@@ -45,6 +50,7 @@ jobs:
         run: node src/shopify-dry-run.js
 
       - name: Shopify LIVE PRICE UPDATE
+        if: ${{ github.event.inputs.confirm_live == 'LIVE' }}
         env:
           SHOPIFY_CLIENT_ID: ${{ secrets.SHOPIFY_CLIENT_ID }}
           SHOPIFY_CLIENT_SECRET: ${{ secrets.SHOPIFY_CLIENT_SECRET }}
