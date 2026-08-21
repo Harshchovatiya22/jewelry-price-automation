@@ -661,8 +661,7 @@ function calculatePrice({
    */
 
   const sellingPriceUSD =
-    sellingPriceINR /
-    USD_CONVERSION_RATE;
+  (sellingPriceINR / USD_CONVERSION_RATE) * 1.04;
 
   return {
     metalRate,
