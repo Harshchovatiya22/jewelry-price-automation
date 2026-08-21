@@ -12,7 +12,7 @@ await page.goto(URL, {
 
 const text = await page.locator("body").innerText();
 
-const match24K = text.match(/24\s*Carat[\s\S]{0,500}?₹?\s*([\d,]+(?:\.\d+)?)/i);
+const match24K = text.match(/24K\s*Gold\s*\/g[\s\S]{0,100}?₹\s*([\d,]+)/i);
 
 if (!match24K) {
   throw new Error("24K gold price not found");
