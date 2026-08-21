@@ -11,7 +11,7 @@ const METAFIELD_NAMESPACE = "custom";
 const SILVER_PRICE_PER_GRAM = 300;
 const PROFIT_MULTIPLIER = 1.6;
 const USD_CONVERSION_RATE = 97;
-const MAKING_CHARGE_PERCENT = 0.12;
+const MAKING_CHARGE_PER_GRAM = 1500;
 
 const MAX_VARIANT_PRICE_CHANGE_PERCENT = 15;
 const MAX_PRICE_USD = 1000000;
@@ -30,13 +30,13 @@ async function getAccessToken() {
     {
       method: "POST",
       headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        client_id: SHOPIFY_CLIENT_ID,
-        client_secret: SHOPIFY_CLIENT_SECRET,
-        grant_type: "client_credentials"
-      })
+  "Content-Type": "application/x-www-form-urlencoded"
+},
+body: new URLSearchParams({
+  grant_type: "client_credentials",
+  client_id: SHOPIFY_CLIENT_ID,
+  client_secret: SHOPIFY_CLIENT_SECRET
+})
     }
   );
 
@@ -303,7 +303,7 @@ function calculatePrice(
 
   const metalCost = goldWeight * metalRate;
   const makingCost =
-  goldWeight * 1500;
+  goldWeight * MAKING_CHARGE_PER_GRAM;
 
   const baseCost =
     metalCost +
@@ -334,15 +334,22 @@ function validatePriceChange(currentPrice, newPrice) {
     throw new Error("Current Shopify price is invalid.");
   }
 
+  if (!Number.isFinite(newPrice) || newPrice <= 0) {
+    throw new Error("Calculated Shopify price is invalid.");
+  }
+
   const changePercent =
     ((newPrice - currentPrice) / currentPrice) * 100;
 
-  if (
-    Math.abs(changePercent) >
-    MAX_VARIANT_PRICE_CHANGE_PERCENT
-  ) {
+  // Price increases are allowed.
+  if (changePercent >= 0) {
+    return changePercent;
+  }
+
+  // Price decreases are limited to 15%.
+  if (changePercent < -MAX_VARIANT_PRICE_CHANGE_PERCENT) {
     throw new Error(
-      `Price change ${changePercent.toFixed(2)}% exceeds 15% safety limit.`
+      `Price decrease ${changePercent.toFixed(2)}% exceeds maximum allowed decrease of 15%.`
     );
   }
 
@@ -409,12 +416,23 @@ async function updateVariant(
   }
 
   if (!result.productVariants?.length) {
-    throw new Error(
-      "Shopify did not confirm the price update."
-    );
-  }
+  throw new Error(
+    "Shopify did not confirm the price update."
+  );
+}
 
-  return result.productVariants[0];
+const updatedVariant = result.productVariants[0];
+
+if (
+  updatedVariant.id !== variantId ||
+  Number(updatedVariant.price) !== Number(price.toFixed(2))
+) {
+  throw new Error(
+    `Shopify price verification failed for variant ${variantId}.`
+  );
+}
+
+return updatedVariant;
 }
 
 async function main() {
@@ -493,6 +511,10 @@ async function main() {
           Number(variant.price),
           newPrice
         );
+
+      if (!Number.isFinite(newPrice) || newPrice <= 0) {
+  throw new Error("Invalid calculated price. Shopify update blocked.");
+}
 
       await updateVariant(
   token,
