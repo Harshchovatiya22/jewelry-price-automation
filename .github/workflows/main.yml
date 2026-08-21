@@ -31,6 +31,10 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Fetch and validate gold price
+        env:
+          SHOPIFY_CLIENT_ID: ${{ secrets.SHOPIFY_CLIENT_ID }}
+          SHOPIFY_CLIENT_SECRET: ${{ secrets.SHOPIFY_CLIENT_SECRET }}
+          SHOPIFY_STORE_DOMAIN: ${{ secrets.SHOPIFY_STORE_DOMAIN }}
         run: node src/scraper.js
 
       - name: Shopify DRY RUN
