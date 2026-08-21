@@ -348,19 +348,35 @@ function validatePriceChange(currentPrice, newPrice) {
   return changePercent;
 }
 
-async function updateVariant(token, variantId, price) {
+async function updateVariant(
+  token,
+  productId,
+  variantId,
+  price
+) {
   const mutation = `
-    mutation UpdateVariant(
-      $input: ProductVariantInput!
+    mutation UpdateVariants(
+      $productId: ID!
+      $variants: [ProductVariantsBulkInput!]!
     ) {
-      productVariantUpdate(input: $input) {
-        productVariant {
+      productVariantsBulkUpdate(
+        productId: $productId
+        variants: $variants
+        allowPartialUpdates: false
+      ) {
+        product {
+          id
+        }
+
+        productVariants {
           id
           price
         }
+
         userErrors {
           field
           message
+          code
         }
       }
     }
@@ -370,20 +386,34 @@ async function updateVariant(token, variantId, price) {
     token,
     mutation,
     {
-      input: {
-        id: variantId,
-        price: price.toFixed(2)
-      }
+      productId,
+      variants: [
+        {
+          id: variantId,
+          price: price.toFixed(2)
+        }
+      ]
     }
   );
 
-  const result = data.productVariantUpdate;
+  const result =
+    data.productVariantsBulkUpdate;
 
   if (result.userErrors?.length) {
     throw new Error(
-      `Shopify rejected update: ${JSON.stringify(result.userErrors)}`
+      `Shopify rejected update: ${JSON.stringify(
+        result.userErrors
+      )}`
     );
   }
+
+  if (!result.productVariants?.length) {
+    throw new Error(
+      "Shopify did not confirm the price update."
+    );
+  }
+
+  return result.productVariants[0];
 }
 
 async function main() {
@@ -464,10 +494,11 @@ async function main() {
         );
 
       await updateVariant(
-        token,
-        variant.id,
-        newPrice
-      );
+  token,
+  variant.product.id,
+  variant.id,
+  newPrice
+);
 
       updated++;
 
