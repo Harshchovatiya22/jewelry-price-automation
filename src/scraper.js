@@ -3,46 +3,68 @@ import { chromium } from "playwright";
 const GOODRETURNS_URL =
   "https://www.goodreturns.in/gold-rates/surat.html";
 
-const SHOPIFY_STORE_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN;
-const SHOPIFY_CLIENT_ID = process.env.SHOPIFY_CLIENT_ID;
-const SHOPIFY_CLIENT_SECRET = process.env.SHOPIFY_CLIENT_SECRET;
+const SHOPIFY_API_VERSION = "2026-07";
+
+const SHOPIFY_STORE_DOMAIN =
+  process.env.SHOPIFY_STORE_DOMAIN;
+
+const SHOPIFY_CLIENT_ID =
+  process.env.SHOPIFY_CLIENT_ID;
+
+const SHOPIFY_CLIENT_SECRET =
+  process.env.SHOPIFY_CLIENT_SECRET;
 
 /*
 |--------------------------------------------------------------------------
-| SAFETY LIMITS
+| PRICING SETTINGS
 |--------------------------------------------------------------------------
-| These are deliberately conservative.
-| We will NOT allow automation to proceed if the source data looks wrong.
 */
 
-const MAX_GOLD_RATE_CHANGE_PERCENT = 10;
+const PROFIT_MULTIPLIER = 1.9;
+const USD_CONVERSION_RATE = 97;
+const MAKING_CHARGE_PERCENT = 0.12;
 
-// Never allow calculated jewelry prices to move more than this
-// during one automation run.
-const MAX_VARIANT_PRICE_CHANGE_PERCENT = 15;
+/*
+|--------------------------------------------------------------------------
+| SAFETY SETTINGS
+|--------------------------------------------------------------------------
+*/
 
-// Absolute sanity boundaries for 24K gold per gram.
 const MIN_24K_PRICE = 5000;
 const MAX_24K_PRICE = 50000;
 
-function assertEnvironment() {
+const MAX_VARIANT_PRICE_CHANGE_PERCENT = 15;
+
+const METAFIELD_NAMESPACE = "custom";
+
+const METAFIELDS = {
+  metal: "metal",
+  goldWeight: "gold_weight",
+  diamondCost: "diamond_cost",
+  otherCost: "other_cost"
+};
+
+/*
+|--------------------------------------------------------------------------
+| ENVIRONMENT CHECK
+|--------------------------------------------------------------------------
+*/
+
+function validateEnvironment() {
   const missing = [];
 
-  if (!SHOPIFY_STORE_DOMAIN) {
+  if (!SHOPIFY_STORE_DOMAIN)
     missing.push("SHOPIFY_STORE_DOMAIN");
-  }
 
-  if (!SHOPIFY_CLIENT_ID) {
+  if (!SHOPIFY_CLIENT_ID)
     missing.push("SHOPIFY_CLIENT_ID");
-  }
 
-  if (!SHOPIFY_CLIENT_SECRET) {
+  if (!SHOPIFY_CLIENT_SECRET)
     missing.push("SHOPIFY_CLIENT_SECRET");
-  }
 
-  if (missing.length > 0) {
+  if (missing.length) {
     throw new Error(
-      `Missing required environment variables: ${missing.join(", ")}`
+      `Missing GitHub Secrets: ${missing.join(", ")}`
     );
   }
 }
@@ -53,7 +75,7 @@ function assertEnvironment() {
 |--------------------------------------------------------------------------
 */
 
-async function getGoldPrice() {
+async function get24KGoldPrice() {
   const browser = await chromium.launch({
     headless: true
   });
@@ -74,7 +96,7 @@ async function getGoldPrice() {
 
     if (!match24K) {
       throw new Error(
-        "24K gold price not found. PRICE UPDATE BLOCKED."
+        "24K gold price not found. ALL PRICE UPDATES BLOCKED."
       );
     }
 
@@ -84,14 +106,16 @@ async function getGoldPrice() {
 
     if (!Number.isFinite(price24K)) {
       throw new Error(
-        `Invalid 24K gold price: ${price24K}. PRICE UPDATE BLOCKED.`
+        "Invalid 24K gold price. ALL PRICE UPDATES BLOCKED."
       );
     }
 
-    if (price24K < MIN_24K_PRICE || price24K > MAX_24K_PRICE) {
+    if (
+      price24K < MIN_24K_PRICE ||
+      price24K > MAX_24K_PRICE
+    ) {
       throw new Error(
-        `24K gold price ${price24K} is outside the allowed range ` +
-        `(${MIN_24K_PRICE}-${MAX_24K_PRICE}). PRICE UPDATE BLOCKED.`
+        `24K price ₹${price24K} outside safety range. ALL PRICE UPDATES BLOCKED.`
       );
     }
 
@@ -103,32 +127,22 @@ async function getGoldPrice() {
 
 /*
 |--------------------------------------------------------------------------
-| CALCULATE GOLD PURITY PRICES
+| CALCULATE PURITY RATES
 |--------------------------------------------------------------------------
 */
 
-function calculateGoldPrices(price24K) {
-  const prices = {
-    "24K": price24K,
-    "18K": price24K * 18 / 24,
+function calculatePurityRates(price24K) {
+  return {
+    "10K": price24K * 10 / 24,
     "14K": price24K * 14 / 24,
-    "10K": price24K * 10 / 24
+    "18K": price24K * 18 / 24,
+    "24K": price24K
   };
-
-  for (const [karat, price] of Object.entries(prices)) {
-    if (!Number.isFinite(price) || price <= 0) {
-      throw new Error(
-        `Invalid calculated ${karat} price. PRICE UPDATE BLOCKED.`
-      );
-    }
-  }
-
-  return prices;
 }
 
 /*
 |--------------------------------------------------------------------------
-| SHOPIFY AUTHENTICATION
+| SHOPIFY ACCESS TOKEN
 |--------------------------------------------------------------------------
 */
 
@@ -138,7 +152,8 @@ async function getShopifyAccessToken() {
     {
       method: "POST",
       headers: {
-        "Content-Type": "application/x-www-form-urlencoded"
+        "Content-Type":
+          "application/x-www-form-urlencoded"
       },
       body: new URLSearchParams({
         grant_type: "client_credentials",
@@ -152,7 +167,7 @@ async function getShopifyAccessToken() {
 
   if (!response.ok || !data.access_token) {
     throw new Error(
-      `Shopify authentication failed. PRICE UPDATE BLOCKED.`
+      "Shopify authentication failed. ALL PRICE UPDATES BLOCKED."
     );
   }
 
@@ -171,7 +186,7 @@ async function shopifyGraphQL(
   variables = {}
 ) {
   const response = await fetch(
-    `https://${SHOPIFY_STORE_DOMAIN}/admin/api/2026-07/graphql.json`,
+    `https://${SHOPIFY_STORE_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`,
     {
       method: "POST",
       headers: {
@@ -189,13 +204,13 @@ async function shopifyGraphQL(
 
   if (!response.ok) {
     throw new Error(
-      `Shopify API request failed. PRICE UPDATE BLOCKED.`
+      `Shopify API HTTP error ${response.status}.`
     );
   }
 
   if (data.errors) {
     throw new Error(
-      `Shopify GraphQL error. PRICE UPDATE BLOCKED.`
+      `Shopify GraphQL error: ${JSON.stringify(data.errors)}`
     );
   }
 
@@ -204,7 +219,7 @@ async function shopifyGraphQL(
 
 /*
 |--------------------------------------------------------------------------
-| READ SHOPIFY PRODUCTS
+| GET PRODUCTS + VARIANTS + METAFIELDS
 |--------------------------------------------------------------------------
 */
 
@@ -215,12 +230,38 @@ async function getProducts(accessToken) {
         nodes {
           id
           title
+
           variants(first: 250) {
             nodes {
               id
               title
               price
               sku
+
+              metafields(
+                identifiers: [
+                  {
+                    namespace: "${METAFIELD_NAMESPACE}"
+                    key: "${METAFIELDS.metal}"
+                  }
+                  {
+                    namespace: "${METAFIELD_NAMESPACE}"
+                    key: "${METAFIELDS.goldWeight}"
+                  }
+                  {
+                    namespace: "${METAFIELD_NAMESPACE}"
+                    key: "${METAFIELDS.diamondCost}"
+                  }
+                  {
+                    namespace: "${METAFIELD_NAMESPACE}"
+                    key: "${METAFIELDS.otherCost}"
+                  }
+                ]
+              ) {
+                namespace
+                key
+                value
+              }
             }
           }
         }
@@ -228,12 +269,162 @@ async function getProducts(accessToken) {
     }
   `;
 
-  const data = await shopifyGraphQL(
-    accessToken,
-    query
-  );
+  const data =
+    await shopifyGraphQL(
+      accessToken,
+      query
+    );
 
   return data.products.nodes;
+}
+
+/*
+|--------------------------------------------------------------------------
+| METAFIELD HELPER
+|--------------------------------------------------------------------------
+*/
+
+function getMetafield(
+  metafields,
+  key
+) {
+  const field = metafields.find(
+    (item) =>
+      item &&
+      item.namespace === METAFIELD_NAMESPACE &&
+      item.key === key
+  );
+
+  return field?.value ?? null;
+}
+
+/*
+|--------------------------------------------------------------------------
+| PURITY DETECTION
+|--------------------------------------------------------------------------
+*/
+
+function detectPurity(metal) {
+  if (!metal) return null;
+
+  const normalized =
+    String(metal)
+      .trim()
+      .toUpperCase();
+
+  if (/\b18K\b/.test(normalized))
+    return "18K";
+
+  if (/\b14K\b/.test(normalized))
+    return "14K";
+
+  if (/\b10K\b/.test(normalized))
+    return "10K";
+
+  return null;
+}
+
+/*
+|--------------------------------------------------------------------------
+| NUMBER VALIDATION
+|--------------------------------------------------------------------------
+*/
+
+function parsePositiveNumber(
+  value,
+  fieldName
+) {
+  const number = Number(value);
+
+  if (!Number.isFinite(number) || number < 0) {
+    throw new Error(
+      `Invalid ${fieldName}: ${value}`
+    );
+  }
+
+  return number;
+}
+
+/*
+|--------------------------------------------------------------------------
+| CALCULATE FINAL PRICE
+|--------------------------------------------------------------------------
+*/
+
+function calculateSellingPrice({
+  purity,
+  goldWeight,
+  diamondCost,
+  otherCost,
+  purityRates
+}) {
+  const metalRate =
+    purityRates[purity];
+
+  if (!metalRate) {
+    throw new Error(
+      `No gold rate available for ${purity}`
+    );
+  }
+
+  /*
+   * Metal Cost
+   */
+
+  const metalCost =
+    goldWeight * metalRate;
+
+  /*
+   * Making Cost
+   *
+   * 12% of Metal Cost
+   */
+
+  const makingCost =
+    metalCost * MAKING_CHARGE_PERCENT;
+
+  /*
+   * Base Cost
+   */
+
+  const baseCost =
+    metalCost +
+    diamondCost +
+    makingCost +
+    otherCost;
+
+  /*
+   * Profit
+   */
+
+  const sellingPriceINR =
+    baseCost * PROFIT_MULTIPLIER;
+
+  /*
+   * INR -> USD
+   */
+
+  const sellingPriceUSD =
+    sellingPriceINR /
+    USD_CONVERSION_RATE;
+
+  if (
+    !Number.isFinite(sellingPriceUSD) ||
+    sellingPriceUSD <= 0
+  ) {
+    throw new Error(
+      "Calculated selling price is invalid."
+    );
+  }
+
+  return {
+    metalRate,
+    metalCost,
+    makingCost,
+    baseCost,
+    sellingPriceINR,
+    sellingPriceUSD
+  };
 }
 
 /*
@@ -242,24 +433,34 @@ async function getProducts(accessToken) {
 |--------------------------------------------------------------------------
 */
 
-function validatePriceChange(oldPrice, newPrice) {
-  const oldValue = Number(oldPrice);
-  const newValue = Number(newPrice);
-
+function validatePriceChange(
+  currentPrice,
+  newPrice
+) {
   if (
-    !Number.isFinite(oldValue) ||
-    !Number.isFinite(newValue) ||
-    oldValue <= 0 ||
-    newValue <= 0
+    !Number.isFinite(currentPrice) ||
+    currentPrice <= 0
   ) {
     return {
       safe: false,
-      reason: "Invalid old/new price"
+      reason: "Current Shopify price is invalid."
+    };
+  }
+
+  if (
+    !Number.isFinite(newPrice) ||
+    newPrice <= 0
+  ) {
+    return {
+      safe: false,
+      reason: "Calculated price is invalid."
     };
   }
 
   const changePercent =
-    ((newValue - oldValue) / oldValue) * 100;
+    ((newPrice - currentPrice) /
+      currentPrice) *
+    100;
 
   if (
     Math.abs(changePercent) >
@@ -268,8 +469,8 @@ function validatePriceChange(oldPrice, newPrice) {
     return {
       safe: false,
       reason:
-        `Price change of ${changePercent.toFixed(2)}% ` +
-        `exceeds safety limit of ${MAX_VARIANT_PRICE_CHANGE_PERCENT}%`
+        `Price change ${changePercent.toFixed(2)}% ` +
+        `exceeds ${MAX_VARIANT_PRICE_CHANGE_PERCENT}% safety limit.`
     };
   }
 
@@ -281,156 +482,435 @@ function validatePriceChange(oldPrice, newPrice) {
 
 /*
 |--------------------------------------------------------------------------
+| UPDATE VARIANTS
+|--------------------------------------------------------------------------
+*/
+
+async function updateProductVariants(
+  accessToken,
+  productId,
+  variants
+) {
+  const mutation = `
+    mutation UpdateVariants(
+      $productId: ID!,
+      $variants: [ProductVariantsBulkInput!]!
+    ) {
+      productVariantsBulkUpdate(
+        productId: $productId
+        variants: $variants
+        allowPartialUpdates: false
+      ) {
+        product {
+          id
+        }
+
+        productVariants {
+          id
+          price
+        }
+
+        userErrors {
+          field
+          message
+          code
+        }
+      }
+    }
+  `;
+
+  const data =
+    await shopifyGraphQL(
+      accessToken,
+      mutation,
+      {
+        productId,
+        variants
+      }
+    );
+
+  const result =
+    data.productVariantsBulkUpdate;
+
+  if (
+    result.userErrors &&
+    result.userErrors.length > 0
+  ) {
+    throw new Error(
+      `Shopify price update rejected: ${JSON.stringify(
+        result.userErrors
+      )}`
+    );
+  }
+
+  return result;
+}
+
+/*
+|--------------------------------------------------------------------------
 | MAIN
 |--------------------------------------------------------------------------
 */
 
 async function main() {
-  console.log("======================================");
-  console.log("JEWELRY PRICE AUTOMATION");
-  console.log("SAFE DRY-RUN MODE");
-  console.log("======================================");
-
-  assertEnvironment();
-
-  /*
-   * STEP 1
-   */
-
-  console.log("\n[1/5] Getting 24K gold price...");
-
-  const price24K = await getGoldPrice();
-
-  console.log(`24K GOLD: ₹${price24K.toFixed(2)}/gram`);
-
-  /*
-   * STEP 2
-   */
-
-  console.log("\n[2/5] Calculating purity prices...");
-
-  const goldPrices =
-    calculateGoldPrices(price24K);
-
   console.log(
-    `18K: ₹${goldPrices["18K"].toFixed(2)}`
+    "=========================================="
   );
 
   console.log(
-    `14K: ₹${goldPrices["14K"].toFixed(2)}`
+    "JEWELRY PRICE AUTOMATION"
   );
 
   console.log(
-    `10K: ₹${goldPrices["10K"].toFixed(2)}`
+    "=========================================="
+  );
+
+  validateEnvironment();
+
+  /*
+   * 1. FETCH 24K
+   */
+
+  console.log(
+    "\n[1] Fetching 24K gold price..."
+  );
+
+  const price24K =
+    await get24KGoldPrice();
+
+  console.log(
+    `24K = ₹${price24K.toFixed(2)}/gram`
   );
 
   /*
-   * STEP 3
+   * 2. CALCULATE PURITIES
    */
 
-  console.log("\n[3/5] Authenticating with Shopify...");
+  const purityRates =
+    calculatePurityRates(
+      price24K
+    );
+
+  console.log("\nCalculated rates:");
+
+  console.log(
+    `18K = ₹${purityRates["18K"].toFixed(2)}`
+  );
+
+  console.log(
+    `14K = ₹${purityRates["14K"].toFixed(2)}`
+  );
+
+  console.log(
+    `10K = ₹${purityRates["10K"].toFixed(2)}`
+  );
+
+  /*
+   * 3. AUTHENTICATE
+   */
+
+  console.log(
+    "\n[2] Authenticating Shopify..."
+  );
 
   const accessToken =
     await getShopifyAccessToken();
 
-  console.log("Shopify authentication successful.");
+  console.log(
+    "Shopify authentication successful."
+  );
 
   /*
-   * STEP 4
+   * 4. READ PRODUCTS
    */
 
-  console.log("\n[4/5] Reading Shopify products...");
+  console.log(
+    "\n[3] Reading Shopify products..."
+  );
 
   const products =
-    await getProducts(accessToken);
+    await getProducts(
+      accessToken
+    );
 
   console.log(
     `Products found: ${products.length}`
   );
 
   /*
-   * STEP 5
+   * 5. PREPARE ALL PRICE CHANGES
    */
 
-  console.log("\n[5/5] Running safety validation...");
+  console.log(
+    "\n[4] Calculating and validating prices..."
+  );
 
-  let variantCount = 0;
-  let blockedCount = 0;
+  const updatesByProduct =
+    new Map();
+
+  let checked = 0;
+  let skipped = 0;
 
   for (const product of products) {
-    for (const variant of product.variants.nodes) {
-      variantCount++;
+    const productUpdates = [];
 
-      const currentPrice =
-        Number(variant.price);
+    for (const variant of product.variants.nodes) {
+      checked++;
+
+      const metal =
+        getMetafield(
+          variant.metafields,
+          METAFIELDS.metal
+        );
 
       /*
-       * IMPORTANT:
-       *
-       * We are NOT changing the Shopify price yet.
-       *
-       * The actual jewelry pricing formula will be
-       * added after we confirm exactly how your
-       * product variants represent gold weight,
-       * diamond cost, making charges, etc.
+       * Silver / unsupported metals are skipped.
        */
 
-      if (
-        !Number.isFinite(currentPrice) ||
-        currentPrice <= 0
-      ) {
+      const purity =
+        detectPurity(metal);
+
+      if (!purity) {
         console.log(
-          `BLOCKED: ${product.title} / ${variant.title}`
+          `SKIP: ${product.title} / ${variant.title}`
         );
 
         console.log(
-          "Reason: Invalid Shopify price."
+          `  Metal: ${metal || "missing"}`
         );
 
-        blockedCount++;
+        skipped++;
+
+        continue;
       }
+
+      const goldWeight =
+        parsePositiveNumber(
+          getMetafield(
+            variant.metafields,
+            METAFIELDS.goldWeight
+          ),
+          "Gold Weight"
+        );
+
+      const diamondCost =
+        parsePositiveNumber(
+          getMetafield(
+            variant.metafields,
+            METAFIELDS.diamondCost
+          ),
+          "Diamond Cost"
+        );
+
+      const otherCost =
+        parsePositiveNumber(
+          getMetafield(
+            variant.metafields,
+            METAFIELDS.otherCost
+          ),
+          "Other Cost"
+        );
+
+      const calculated =
+        calculateSellingPrice({
+          purity,
+          goldWeight,
+          diamondCost,
+          otherCost,
+          purityRates
+        });
+
+      const newPrice =
+        Number(
+          calculated.sellingPriceUSD.toFixed(2)
+        );
+
+      const safety =
+        validatePriceChange(
+          Number(variant.price),
+          newPrice
+        );
+
+      if (!safety.safe) {
+        throw new Error(
+          `PRICE UPDATE BLOCKED\n` +
+          `${product.title} / ${variant.title}\n` +
+          `${safety.reason}`
+        );
+      }
+
+      console.log(
+        `\nAPPROVED: ${product.title}`
+      );
+
+      console.log(
+        `Variant: ${variant.title}`
+      );
+
+      console.log(
+        `Metal: ${purity}`
+      );
+
+      console.log(
+        `Gold Weight: ${goldWeight}g`
+      );
+
+      console.log(
+        `Metal Cost: ₹${calculated.metalCost.toFixed(2)}`
+      );
+
+      console.log(
+        `Making Cost: ₹${calculated.makingCost.toFixed(2)}`
+      );
+
+      console.log(
+        `Diamond Cost: ₹${diamondCost.toFixed(2)}`
+      );
+
+      console.log(
+        `Other Cost: ₹${otherCost.toFixed(2)}`
+      );
+
+      console.log(
+        `Base Cost: ₹${calculated.baseCost.toFixed(2)}`
+      );
+
+      console.log(
+        `Selling Price INR: ₹${calculated.sellingPriceINR.toFixed(2)}`
+      );
+
+      console.log(
+        `Old Shopify Price: $${Number(variant.price).toFixed(2)}`
+      );
+
+      console.log(
+        `New Shopify Price: $${newPrice.toFixed(2)}`
+      );
+
+      console.log(
+        `Change: ${safety.changePercent.toFixed(2)}%`
+      );
+
+      productUpdates.push({
+        id: variant.id,
+        price: newPrice
+      });
+    }
+
+    if (productUpdates.length > 0) {
+      updatesByProduct.set(
+        product.id,
+        productUpdates
+      );
     }
   }
 
   /*
-   * FINAL SAFETY RESULT
+   * 6. FINAL SAFETY CHECK
    */
 
-  console.log("\n======================================");
-  console.log("SAFETY CHECK RESULT");
-  console.log("======================================");
-
   console.log(
-    `Variants checked: ${variantCount}`
+    "\n[5] FINAL SAFETY CHECK..."
   );
 
   console.log(
-    `Variants blocked: ${blockedCount}`
+    `Variants checked: ${checked}`
   );
 
   console.log(
-    `24K gold price: ₹${price24K.toFixed(2)}`
+    `Variants skipped: ${skipped}`
   );
 
   console.log(
-    `Maximum allowed gold-rate movement: ${MAX_GOLD_RATE_CHANGE_PERCENT}%`
+    `Products prepared for update: ${updatesByProduct.size}`
+  );
+
+  /*
+   * IMPORTANT:
+   *
+   * At this point ALL prices have been validated.
+   *
+   * Now we actually update Shopify.
+   */
+
+  console.log(
+    "\n[6] Updating Shopify prices..."
+  );
+
+  let updated = 0;
+
+  for (const [
+    productId,
+    variants
+  ] of updatesByProduct) {
+    await updateProductVariants(
+      accessToken,
+      productId,
+      variants
+    );
+
+    updated += variants.length;
+
+    console.log(
+      `Updated ${variants.length} variants.`
+    );
+  }
+
+  /*
+   * FINAL RESULT
+   */
+
+  console.log(
+    "\n=========================================="
   );
 
   console.log(
-    `Maximum allowed variant movement: ${MAX_VARIANT_PRICE_CHANGE_PERCENT}%`
+    "PRICE AUTOMATION COMPLETED"
   );
 
-  console.log("\n⚠️ DRY-RUN ONLY");
-  console.log("⚠️ NO SHOPIFY PRICES WERE CHANGED.");
-  console.log("======================================");
+  console.log(
+    "=========================================="
+  );
+
+  console.log(
+    `24K Gold: ₹${price24K.toFixed(2)}/g`
+  );
+
+  console.log(
+    `Variants updated: ${updated}`
+  );
+
+  console.log(
+    `Variants skipped: ${skipped}`
+  );
+
+  console.log(
+    "All validated Shopify updates completed."
+  );
+
+  console.log(
+    "=========================================="
+  );
 }
 
 main().catch((error) => {
-  console.error("\n======================================");
-  console.error("AUTOMATION STOPPED");
-  console.error("======================================");
+  console.error(
+    "\n=========================================="
+  );
+
+  console.error(
+    "🚨 PRICE AUTOMATION STOPPED"
+  );
+
+  console.error(
+    "=========================================="
+  );
+
   console.error(error.message);
-  console.error("\nNO SHOPIFY PRICES WERE CHANGED.");
+
+  console.error(
+    "\nNO FURTHER PRICE UPDATES WERE ATTEMPTED."
+  );
 
   process.exit(1);
 });
