@@ -219,49 +219,138 @@ async function shopifyGraphQL(
   return data.data;
 }
 
+async function startBulkOperation(accessToken) {
+  const mutation = `
+    mutation {
+      bulkOperationRunQuery(
+        query: """
+        {
+          products {
+            edges {
+              node {
+                id
+                title
+                variants {
+                  edges {
+                    node {
+                      id
+                      title
+                      price
+                      sku
+                      metafields(namespace: "custom", first: 10) {
+                        edges { node { key value } }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+      ) {
+        bulkOperation { id status }
+        userErrors { field message }
+      }
+    }
+  `;
+
+  const data = await shopifyGraphQL(accessToken, mutation);
+  const result = data.bulkOperationRunQuery;
+
+  if (result.userErrors.length > 0) {
+    throw new Error(`Bulk operation failed to start: ${JSON.stringify(result.userErrors)}`);
+  }
+
+  return result.bulkOperation.id;
+}
+
+async function waitForBulkOperation(accessToken) {
+  const query = `
+    query {
+      currentBulkOperation {
+        id
+        status
+        errorCode
+        url
+      }
+    }
+  `;
+
+  while (true) {
+    const data = await shopifyGraphQL(accessToken, query);
+    const op = data.currentBulkOperation;
+
+    if (!op) {
+      throw new Error("No bulk operation found.");
+    }
+
+    if (op.status === "COMPLETED") {
+      return op.url;
+    }
+
+    if (op.status === "FAILED" || op.status === "CANCELED") {
+      throw new Error(`Bulk operation ${op.status}: ${op.errorCode || "unknown error"}`);
+    }
+
+    // still RUNNING or CREATED — wait 3 seconds and check again
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+  }
+}
+
+async function downloadAndParseBulkResult(url) {
+  if (!url) {
+    return [];
+  }
+
+  const response = await fetch(url);
+  const text = await response.text();
+  const lines = text.trim().split("\n").filter(Boolean);
+
+  const productsById = new Map();
+  const variantsById = new Map();
+
+  for (const line of lines) {
+    const obj = JSON.parse(line);
+
+    if (!obj.__parentId) {
+      // top-level product
+      productsById.set(obj.id, {
+        id: obj.id,
+        title: obj.title,
+        variants: { nodes: [] }
+      });
+    } else if (productsById.has(obj.__parentId)) {
+      // this is a variant, parent is a product
+      const variant = {
+        id: obj.id,
+        title: obj.title,
+        price: obj.price,
+        sku: obj.sku,
+        metafields: []
+      };
+      variantsById.set(obj.id, variant);
+      productsById.get(obj.__parentId).variants.nodes.push(variant);
+    } else if (variantsById.has(obj.__parentId)) {
+      // this is a metafield, parent is a variant
+      variantsById.get(obj.__parentId).metafields.push({
+        namespace: obj.namespace,
+        key: obj.key,
+        value: obj.value
+      });
+    }
+  }
+
+  return Array.from(productsById.values());
+}
+
 /*
 |--------------------------------------------------------------------------
 | GET PRODUCTS + VARIANT METAFIELDS
 |--------------------------------------------------------------------------
 */
 
-async function getProducts(accessToken) {
-  const query = `
-    query GetProducts {
-      products(first: 250) {
-        nodes {
-          id
-          title
 
-          variants(first: 250) {
-            nodes {
-              id
-              title
-              price
-              sku
-
-              metafields(first: 50) {
-  nodes {
-    namespace
-    key
-    value
-  }
-}
-            }
-          }
-        }
-      }
-    }
-  `;
-
-  const data =
-    await shopifyGraphQL(
-      accessToken,
-      query
-    );
-
-  return data.products.nodes;
-}
 
 /*
 |--------------------------------------------------------------------------
@@ -642,10 +731,18 @@ console.log("Validated metal rates saved to gold-prices.json");
     "\n[3] Reading Shopify products..."
   );
 
+    const bulkOperationId =
+    await startBulkOperation(accessToken);
+
+  console.log(
+    `Bulk operation started: ${bulkOperationId}`
+  );
+
+  const resultUrl =
+    await waitForBulkOperation(accessToken);
+
   const products =
-    await getProducts(
-      accessToken
-    );
+    await downloadAndParseBulkResult(resultUrl);
 
   console.log(
     `Products found: ${products.length}`
