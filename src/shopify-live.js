@@ -302,7 +302,8 @@ function calculatePrice(
   }
 
   const metalCost = goldWeight * metalRate;
-  const makingCost = metalCost * MAKING_CHARGE_PERCENT;
+  const makingCost =
+  goldWeight * 1500;
 
   const baseCost =
     metalCost +
