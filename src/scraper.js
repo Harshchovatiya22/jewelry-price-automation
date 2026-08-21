@@ -1,4 +1,5 @@
 import { chromium } from "playwright";
+import fs from "node:fs/promises";
 
 const GOODRETURNS_URL =
   "https://www.goodreturns.in/gold-rates/surat.html";
@@ -610,6 +611,14 @@ async function main() {
     calculatePurityRates(
       price24K
     );
+
+  await fs.writeFile(
+  "gold-prices.json",
+  JSON.stringify(metalRates, null, 2),
+  "utf8"
+);
+
+console.log("Validated metal rates saved to gold-prices.json");
 
   console.log("\nMETAL RATES:");
 
