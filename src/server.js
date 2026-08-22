@@ -5,7 +5,7 @@ import jwt from "jsonwebtoken";
 
 import { initDb, getSettings, updateSettings, saveGoldRate, getLatestGoldRate, createRun, addRunItem, completeRun, getLatestRunWithItems } from "./db.js";
 import { fetchGoldRate } from "./scraper.js";
-import { getAccessToken, fetchAllVariants, updateVariantPrice } from "./shopify-client.js";
+import { getAccessToken, fetchAllVariants, fetchVariantsByIds, fetchCollections, fetchProductsInCollection, fetchProductVariants, updateVariantPrice } from "./shopify-client.js";
 import { evaluateVariant, validateGoldRates } from "./pricing.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -144,6 +144,42 @@ app.get("/api/gold-rate/latest", validateShopifyIdToken, async (req, res) => {
   }
 });
 
+app.get("/api/collections", validateShopifyIdToken, async (req, res) => {
+  try {
+    const token = await getAccessToken();
+    const collections = await fetchCollections(token);
+    res.json({ collections });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/api/products", validateShopifyIdToken, async (req, res) => {
+  try {
+    const { collectionId, search, cursor } = req.query;
+    if (!collectionId) return res.status(400).json({ error: "collectionId is required." });
+
+    const token = await getAccessToken();
+    const result = await fetchProductsInCollection(token, collectionId, search || "", cursor || null);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/api/product-variants", validateShopifyIdToken, async (req, res) => {
+  try {
+    const { productId } = req.query;
+    if (!productId) return res.status(400).json({ error: "productId is required." });
+
+    const token = await getAccessToken();
+    const result = await fetchProductVariants(token, productId);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.post("/api/update-prices", validateShopifyIdToken, async (req, res) => {
   let run;
 
@@ -166,10 +202,18 @@ app.post("/api/update-prices", validateShopifyIdToken, async (req, res) => {
 
     validateGoldRates(goldRatesForPricing);
 
+    const requestedVariantIds = Array.isArray(req.body?.variantIds)
+      ? req.body.variantIds.filter((id) => typeof id === "string" && id.trim())
+      : [];
+
     run = await createRun(goldRate.id);
 
     const token = await getAccessToken();
-    const { variants } = await fetchAllVariants(token);
+
+    const variants =
+      requestedVariantIds.length > 0
+        ? await fetchVariantsByIds(token, requestedVariantIds)
+        : (await fetchAllVariants(token)).variants;
 
     let updatedCount = 0;
     let skippedCount = 0;
@@ -191,7 +235,6 @@ app.post("/api/update-prices", validateShopifyIdToken, async (req, res) => {
         continue;
       }
 
-      // status === "ready" -> attempt the LIVE Shopify update
       try {
         await updateVariantPrice(token, evaluation.productId, evaluation.variantId, evaluation.newPrice);
 
@@ -215,6 +258,7 @@ app.post("/api/update-prices", validateShopifyIdToken, async (req, res) => {
 
     res.json({
       runId: run.id,
+      scope: requestedVariantIds.length > 0 ? "selected" : "full_catalog",
       summary: {
         total: variants.length,
         updated: updatedCount,
