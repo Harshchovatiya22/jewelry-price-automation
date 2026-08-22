@@ -5,7 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <title>Jewelry Price Automation</title>
-    <meta name="shopify-api-key" content="79010b4cb45313b6f057a5b14cc64e71">
+    <meta name="shopify-api-key" content="PASTE_YOUR_REAL_CLIENT_ID_HERE">
     <script src="https://cdn.shopify.com/shopifycloud/app-bridge.js"></script>
     <script src="https://cdn.shopify.com/shopifycloud/polaris.js"></script>
     <style>
@@ -53,6 +53,71 @@
             grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
             gap: 16px;
         }
+        .product-row {
+            border: 1px solid #e1e3e5;
+            border-radius: 8px;
+            padding: 10px 12px;
+            margin-bottom: 8px;
+        }
+        .product-row-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            cursor: pointer;
+        }
+        .product-thumb {
+            width: 40px;
+            height: 40px;
+            object-fit: cover;
+            border-radius: 4px;
+            background: #f1f1f1;
+            flex-shrink: 0;
+        }
+        .product-title {
+            font-weight: 600;
+            font-size: 14px;
+        }
+        .product-status {
+            font-size: 12px;
+            color: #6d7175;
+        }
+        .variant-list {
+            margin-top: 10px;
+            padding-left: 52px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .variant-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+        }
+        .variant-row.disabled {
+            color: #a5a5a5;
+        }
+        .chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: #f1f1f1;
+            border-radius: 999px;
+            padding: 4px 10px;
+            font-size: 12px;
+            margin: 3px 4px 3px 0;
+        }
+        .chip button {
+            border: none;
+            background: none;
+            cursor: pointer;
+            font-weight: 700;
+            color: #6d7175;
+        }
+        .chips-wrap {
+            display: flex;
+            flex-wrap: wrap;
+        }
     </style>
     <script>
         async function shopifyFetch(url, options = {}) {
@@ -72,6 +137,8 @@
                 status.textContent = `Connection failed: ${error.message}`;
             }
         }
+
+        // ---------------- Settings ----------------
 
         const SETTINGS_FIELD_IDS = {
             gold_source_url: "setting-gold-source-url",
@@ -129,6 +196,8 @@
             }
         }
 
+        // ---------------- Gold Rate ----------------
+
         function renderGoldRate(rate) {
             const empty = "—";
             document.getElementById("gold-rate-24k").textContent = rate ? `₹${Number(rate.price_24k).toFixed(2)}/g` : empty;
@@ -168,6 +237,198 @@
                 btn.disabled = false;
             }
         }
+
+        // ---------------- Product / Variant Selection ----------------
+
+        let selectedVariants = new Map(); // variantId -> { productTitle, variantTitle, sku }
+        let currentCollectionId = "";
+        let currentSearch = "";
+        let currentCursor = null;
+        let productsAccumulated = [];
+        let searchDebounceTimer = null;
+
+        function safeId(id) {
+            return String(id).replace(/[^a-zA-Z0-9]/g, "_");
+        }
+
+        async function loadCollections() {
+            try {
+                const response = await shopifyFetch("/api/collections");
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || "Failed to load categories");
+
+                const select = document.getElementById("collection-select");
+                select.innerHTML = '<option value="">Select a category...</option>';
+                for (const collection of data.collections) {
+                    const option = document.createElement("option");
+                    option.value = collection.id;
+                    option.textContent = collection.title;
+                    select.appendChild(option);
+                }
+            } catch (error) {
+                document.getElementById("products-error").textContent = error.message;
+            }
+        }
+
+        function onCollectionChange() {
+            currentCollectionId = document.getElementById("collection-select").value;
+            currentCursor = null;
+            productsAccumulated = [];
+            document.getElementById("products-list").innerHTML = "";
+            if (currentCollectionId) loadProducts(true);
+        }
+
+        function onSearchInput() {
+            clearTimeout(searchDebounceTimer);
+            searchDebounceTimer = setTimeout(() => {
+                currentSearch = document.getElementById("product-search").value.trim();
+                currentCursor = null;
+                productsAccumulated = [];
+                document.getElementById("products-list").innerHTML = "";
+                if (currentCollectionId) loadProducts(true);
+            }, 400);
+        }
+
+        async function loadProducts(reset) {
+            const errorBox = document.getElementById("products-error");
+            const loadMoreBtn = document.getElementById("load-more-btn");
+            errorBox.textContent = "";
+
+            if (!currentCollectionId) {
+                errorBox.textContent = "Pick a category first.";
+                return;
+            }
+
+            loadMoreBtn.textContent = "Loading...";
+            loadMoreBtn.disabled = true;
+
+            try {
+                const params = new URLSearchParams({ collectionId: currentCollectionId });
+                if (currentSearch) params.set("search", currentSearch);
+                if (currentCursor) params.set("cursor", currentCursor);
+
+                const response = await shopifyFetch(`/api/products?${params.toString()}`);
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || "Failed to load products");
+
+                if (reset) productsAccumulated = data.products;
+                else productsAccumulated = productsAccumulated.concat(data.products);
+
+                currentCursor = data.products.length > 0 ? data.products[data.products.length - 1].cursor : null;
+                renderProductsList();
+
+                loadMoreBtn.style.display = data.hasNextPage ? "inline-block" : "none";
+            } catch (error) {
+                errorBox.textContent = error.message;
+            } finally {
+                loadMoreBtn.textContent = "Load More Products";
+                loadMoreBtn.disabled = false;
+            }
+        }
+
+        function loadMoreProducts() {
+            loadProducts(false);
+        }
+
+        function renderProductsList() {
+            const container = document.getElementById("products-list");
+            container.innerHTML = "";
+
+            for (const product of productsAccumulated) {
+                const id = safeId(product.id);
+                const wrapper = document.createElement("div");
+                wrapper.className = "product-row";
+                wrapper.innerHTML = `
+                    <div class="product-row-header" onclick="toggleProductVariants('${product.id}')">
+                        <img class="product-thumb" src="${product.imageUrl || ""}" onerror="this.style.visibility='hidden'">
+                        <div>
+                            <div class="product-title">${product.title}</div>
+                            <div class="product-status">${product.status}</div>
+                        </div>
+                    </div>
+                    <div class="variant-list" id="variants-${id}" style="display:none;"></div>
+                `;
+                container.appendChild(wrapper);
+            }
+        }
+
+        async function toggleProductVariants(productId) {
+            const id = safeId(productId);
+            const container = document.getElementById(`variants-${id}`);
+
+            if (container.style.display === "none") {
+                container.style.display = "flex";
+                if (!container.dataset.loaded) {
+                    container.textContent = "Loading variants...";
+                    try {
+                        const response = await shopifyFetch(`/api/product-variants?productId=${encodeURIComponent(productId)}`);
+                        const data = await response.json();
+                        if (!response.ok) throw new Error(data.error || "Failed to load variants");
+
+                        container.innerHTML = "";
+                        for (const variant of data.variants) {
+                            const row = document.createElement("div");
+                            row.className = "variant-row" + (variant.hasAllMetafields ? "" : " disabled");
+
+                            const checkbox = document.createElement("input");
+                            checkbox.type = "checkbox";
+                            checkbox.disabled = !variant.hasAllMetafields;
+                            checkbox.checked = selectedVariants.has(variant.id);
+                            checkbox.onchange = () => toggleVariantSelection(
+                                variant.id, data.productTitle, variant.title, variant.sku, checkbox.checked
+                            );
+
+                            const label = document.createElement("span");
+                            label.textContent = `${variant.title} — $${Number(variant.price).toFixed(2)}${variant.sku ? " — " + variant.sku : ""}${!variant.hasAllMetafields ? " (missing cost data)" : ""}`;
+
+                            row.appendChild(checkbox);
+                            row.appendChild(label);
+                            container.appendChild(row);
+                        }
+
+                        container.dataset.loaded = "1";
+                    } catch (error) {
+                        container.textContent = `Could not load variants: ${error.message}`;
+                    }
+                }
+            } else {
+                container.style.display = "none";
+            }
+        }
+
+        function toggleVariantSelection(variantId, productTitle, variantTitle, sku, checked) {
+            if (checked) {
+                selectedVariants.set(variantId, { productTitle, variantTitle, sku });
+            } else {
+                selectedVariants.delete(variantId);
+            }
+            renderSelectedChips();
+        }
+
+        function removeSelectedVariant(variantId) {
+            selectedVariants.delete(variantId);
+            renderSelectedChips();
+
+            const checkbox = document.querySelector(`input[data-variant-id="${variantId}"]`);
+            if (checkbox) checkbox.checked = false;
+        }
+
+        function renderSelectedChips() {
+            document.getElementById("selected-count").textContent = selectedVariants.size;
+            const chipsBox = document.getElementById("selected-chips");
+            chipsBox.innerHTML = "";
+
+            for (const [variantId, info] of selectedVariants.entries()) {
+                const chip = document.createElement("span");
+                chip.className = "chip";
+                chip.innerHTML = `${info.productTitle} / ${info.variantTitle} <button onclick="removeSelectedVariant('${variantId}')">×</button>`;
+                chipsBox.appendChild(chip);
+            }
+
+            document.getElementById("update-selected-btn").disabled = selectedVariants.size === 0;
+        }
+
+        // ---------------- Update Prices ----------------
 
         function normalizeItem(item, fallbackTimestamp) {
             return {
@@ -240,32 +501,61 @@
             }
         }
 
-        async function updatePrices() {
-            const btn = document.getElementById("update-prices-btn");
+        async function runUpdate(variantIds) {
             const errorBox = document.getElementById("update-error");
             errorBox.textContent = "";
-            btn.textContent = "Updating prices...";
-            btn.disabled = true;
+
+            const selectedBtn = document.getElementById("update-selected-btn");
+            const fullBtn = document.getElementById("update-full-btn");
+            const originalSelectedText = selectedBtn.textContent;
+            const originalFullText = fullBtn.textContent;
+
+            selectedBtn.disabled = true;
+            fullBtn.disabled = true;
+            (variantIds ? selectedBtn : fullBtn).textContent = "Updating prices...";
 
             try {
-                const response = await shopifyFetch("/api/update-prices", { method: "POST" });
+                const response = await shopifyFetch("/api/update-prices", {
+                    method: "POST",
+                    body: JSON.stringify(variantIds ? { variantIds } : {}),
+                });
                 const data = await response.json();
                 if (!response.ok) throw new Error(data.error || "Price update failed");
 
                 renderSummary(data.summary);
                 renderResultsTable(data.items, new Date().toISOString());
+
+                if (variantIds) {
+                    selectedVariants.clear();
+                    renderSelectedChips();
+                }
             } catch (error) {
                 errorBox.textContent = error.message;
             } finally {
-                btn.textContent = "Update Prices";
-                btn.disabled = false;
+                selectedBtn.textContent = originalSelectedText;
+                fullBtn.textContent = originalFullText;
+                selectedBtn.disabled = selectedVariants.size === 0;
+                fullBtn.disabled = false;
             }
+        }
+
+        function updateSelectedPrices() {
+            if (selectedVariants.size === 0) return;
+            runUpdate([...selectedVariants.keys()]);
+        }
+
+        function updateFullCatalogPrices() {
+            const confirmed = confirm(
+                "This will scan and reprice EVERY product in your entire catalog that has complete cost data. Continue?"
+            );
+            if (confirmed) runUpdate(null);
         }
 
         window.addEventListener("DOMContentLoaded", () => {
             testConnection();
             loadSettings();
             loadLatestGoldRate();
+            loadCollections();
             loadLatestRun();
         });
     </script>
@@ -350,6 +640,32 @@
             </s-stack>
         </s-section>
 
+        <s-section heading="Select Products & Variants">
+            <s-stack gap="base">
+                <div class="form-grid">
+                    <div class="field-group">
+                        <label class="field-label" for="collection-select">Category</label>
+                        <select class="field-input" id="collection-select" onchange="onCollectionChange()">
+                            <option value="">Select a category...</option>
+                        </select>
+                    </div>
+                    <div class="field-group">
+                        <label class="field-label" for="product-search">Search Products</label>
+                        <input class="field-input" id="product-search" type="text" placeholder="Type to search..." oninput="onSearchInput()">
+                    </div>
+                </div>
+
+                <s-text id="products-error" tone="critical"></s-text>
+                <div id="products-list"></div>
+                <s-button id="load-more-btn" style="display:none;" onclick="loadMoreProducts()">Load More Products</s-button>
+
+                <div>
+                    <s-text>Selected Variants (<span id="selected-count">0</span>)</s-text>
+                    <div class="chips-wrap" id="selected-chips"></div>
+                </div>
+            </s-stack>
+        </s-section>
+
         <s-section heading="Update Prices">
             <s-stack gap="base">
                 <s-stack direction="inline" gap="base">
@@ -371,7 +687,10 @@
                     </s-box>
                 </s-stack>
 
-                <s-button id="update-prices-btn" variant="primary" onclick="updatePrices()">Update Prices</s-button>
+                <s-stack direction="inline" gap="base">
+                    <s-button id="update-selected-btn" variant="primary" onclick="updateSelectedPrices()" disabled>Update Selected Variants</s-button>
+                    <s-button id="update-full-btn" onclick="updateFullCatalogPrices()">Update Entire Catalog</s-button>
+                </s-stack>
                 <s-text id="update-error" tone="critical"></s-text>
 
                 <div class="table-wrap">
