@@ -33,6 +33,14 @@ jobs:
       - name: Fetch and validate gold price
         run: node src/scraper.js
 
+      - name: Commit updated gold prices
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add gold-prices.json
+          git diff --cached --quiet || git commit -m "Update validated gold prices"
+          git push
+
       - name: Verify validated gold prices
         run: |
           test -s gold-prices.json
