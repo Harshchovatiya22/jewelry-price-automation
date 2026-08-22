@@ -263,11 +263,11 @@ export async function fetchProductsInCollection(token, collectionId, search, cur
   );
 
   const searchQuery = [
-    `collection_id:${collectionNumericId}`,
-    search ? `title:*${search}*` : null,
-  ]
-    .filter(Boolean)
-    .join(" ");
+  `collection_id:${collectionNumericId}`,
+  search ? search : null,
+]
+  .filter(Boolean)
+  .join(" ");
 
   const data = await shopifyGraphQL(token, query, {
     query: searchQuery,
