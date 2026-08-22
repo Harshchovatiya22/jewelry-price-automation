@@ -46,15 +46,7 @@ jobs:
           test -s gold-prices.json
           node -e "const p=require('./gold-prices.json'); for (const k of ['24K','18K','14K','10K','SILVER']) { if (!Number.isFinite(p[k]) || p[k] <= 0) process.exit(1); }"
 
-      - name: Commit gold-prices.json
-        run: |
-          git config user.name "gold-price-bot"
-          git config user.email "actions@github.com"
-          git add gold-prices.json
-          git diff --cached --quiet || git commit -m "Update gold prices [skip ci]"
-          git push
-
-      - name: Shopify DRY RUN
+      - name: Shopify LIVE UPDATE
         env:
           SHOPIFY_CLIENT_ID: ${{ secrets.SHOPIFY_CLIENT_ID }}
           SHOPIFY_CLIENT_SECRET: ${{ secrets.SHOPIFY_CLIENT_SECRET }}
