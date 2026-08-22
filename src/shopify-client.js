@@ -241,36 +241,40 @@ export async function fetchCollections(token) {
 
 export async function fetchProductsInCollection(token, collectionId, search, cursor) {
   const query = `
-    query ProductsInCollection($id: ID!, $query: String, $cursor: String) {
-      collection(id: $id) {
-        title
-        products(first: 25, after: $cursor, query: $query) {
-          edges {
-            node {
-              id
-              title
-              status
-              featuredImage { url }
-            }
-            cursor
+    query ProductsInCollection($query: String, $cursor: String) {
+      products(first: 25, after: $cursor, query: $query) {
+        edges {
+          node {
+            id
+            title
+            status
+            featuredImage { url }
           }
-          pageInfo { hasNextPage }
+          cursor
         }
+        pageInfo { hasNextPage }
       }
     }
   `;
 
-  const searchQuery = search ? `title:*${search}*` : null;
+  const collectionNumericId = collectionId.replace(
+    "gid://shopify/Collection/",
+    ""
+  );
+
+  const searchQuery = [
+    `collection_id:${collectionNumericId}`,
+    search ? `title:*${search}*` : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   const data = await shopifyGraphQL(token, query, {
-    id: collectionId,
     query: searchQuery,
     cursor: cursor || null,
   });
 
-  if (!data.collection) throw new Error("Collection not found.");
-
-  const products = data.collection.products.edges.map((edge) => ({
+  const products = data.products.edges.map((edge) => ({
     id: edge.node.id,
     title: edge.node.title,
     status: edge.node.status,
@@ -279,9 +283,8 @@ export async function fetchProductsInCollection(token, collectionId, search, cur
   }));
 
   return {
-    collectionTitle: data.collection.title,
     products,
-    hasNextPage: data.collection.products.pageInfo.hasNextPage,
+    hasNextPage: data.products.pageInfo.hasNextPage,
   };
 }
 
