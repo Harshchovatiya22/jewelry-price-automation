@@ -175,11 +175,164 @@ async function downloadVariants(url) {
   return [...variants.values()];
 }
 
+/**
+ * FULL CATALOG SCAN — slow (bulk op), used only when no specific
+ * variants were selected on the dashboard.
+ */
 export async function fetchAllVariants(token) {
   const bulkId = await startBulkOperation(token);
   const resultUrl = await waitForBulkOperation(token);
   const variants = await downloadVariants(resultUrl);
   return { variants, bulkId };
+}
+
+/**
+ * TARGETED FETCH — instant, used when the user picked specific
+ * products/variants on the dashboard. No bulk operation involved.
+ */
+export async function fetchVariantsByIds(token, variantIds) {
+  const query = `
+    query GetVariantsByIds($ids: [ID!]!) {
+      nodes(ids: $ids) {
+        ... on ProductVariant {
+          id
+          title
+          price
+          sku
+          product { id title }
+          metafields(namespace: "custom", first: 10) {
+            edges { node { namespace key value } }
+          }
+        }
+      }
+    }
+  `;
+
+  const data = await shopifyGraphQL(token, query, { ids: variantIds });
+
+  return data.nodes
+    .filter(Boolean)
+    .map((node) => ({
+      id: node.id,
+      title: node.title,
+      price: node.price,
+      sku: node.sku,
+      product: node.product,
+      metafields: {
+        nodes: node.metafields.edges.map((edge) => edge.node),
+      },
+    }));
+}
+
+export async function fetchCollections(token) {
+  const query = `
+    query {
+      collections(first: 250, sortKey: TITLE) {
+        edges {
+          node { id title }
+        }
+      }
+    }
+  `;
+
+  const data = await shopifyGraphQL(token, query);
+  return data.collections.edges.map((edge) => edge.node);
+}
+
+export async function fetchProductsInCollection(token, collectionId, search, cursor) {
+  const query = `
+    query ProductsInCollection($id: ID!, $query: String, $cursor: String) {
+      collection(id: $id) {
+        title
+        products(first: 25, after: $cursor, query: $query) {
+          edges {
+            node {
+              id
+              title
+              status
+              featuredImage { url }
+            }
+            cursor
+          }
+          pageInfo { hasNextPage }
+        }
+      }
+    }
+  `;
+
+  const searchQuery = search ? `title:*${search}*` : null;
+
+  const data = await shopifyGraphQL(token, query, {
+    id: collectionId,
+    query: searchQuery,
+    cursor: cursor || null,
+  });
+
+  if (!data.collection) throw new Error("Collection not found.");
+
+  const products = data.collection.products.edges.map((edge) => ({
+    id: edge.node.id,
+    title: edge.node.title,
+    status: edge.node.status,
+    imageUrl: edge.node.featuredImage?.url || null,
+    cursor: edge.cursor,
+  }));
+
+  return {
+    collectionTitle: data.collection.title,
+    products,
+    hasNextPage: data.collection.products.pageInfo.hasNextPage,
+  };
+}
+
+export async function fetchProductVariants(token, productId) {
+  const query = `
+    query ProductVariants($id: ID!) {
+      product(id: $id) {
+        id
+        title
+        variants(first: 100) {
+          edges {
+            node {
+              id
+              title
+              price
+              sku
+              metafields(namespace: "custom", first: 10) {
+                edges { node { namespace key value } }
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  const data = await shopifyGraphQL(token, query, { id: productId });
+  if (!data.product) throw new Error("Product not found.");
+
+  const variants = data.product.variants.edges.map((edge) => {
+    const variant = edge.node;
+    const metafields = {};
+    for (const mfEdge of variant.metafields.edges) {
+      metafields[mfEdge.node.key] = mfEdge.node.value;
+    }
+    return {
+      id: variant.id,
+      title: variant.title,
+      price: variant.price,
+      sku: variant.sku,
+      metal: metafields.metal || null,
+      goldWeight: metafields.gold_weight || null,
+      diamondCost: metafields.diamond_cost || null,
+      otherCost: metafields.other_cost || null,
+      hasAllMetafields: Boolean(
+        metafields.metal && metafields.gold_weight && metafields.diamond_cost && metafields.other_cost
+      ),
+    };
+  });
+
+  return { productId: data.product.id, productTitle: data.product.title, variants };
 }
 
 export async function updateVariantPrice(token, productId, variantId, price) {
