@@ -5,7 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <title>Jewelry Price Automation</title>
-    <meta name="shopify-api-key" content="PASTE_YOUR_REAL_CLIENT_ID_HERE">
+    <meta name="shopify-api-key" content="79010b4cb45313b6f057a5b14cc64e71">
     <script src="https://cdn.shopify.com/shopifycloud/app-bridge.js"></script>
     <script src="https://cdn.shopify.com/shopifycloud/polaris.js"></script>
     <style>
@@ -24,24 +24,40 @@
             font-weight: 600;
             color: #6d7175;
         }
-        .status-pill {
-            display: inline-block;
-            padding: 2px 8px;
-            border-radius: 999px;
-            font-size: 12px;
-            font-weight: 600;
-        }
-        .status-ready { background: #d3f3d0; color: #0a5c1c; }
-        .status-skipped { background: #f1f1f1; color: #6d7175; }
-        .status-blocked { background: #ffe2e2; color: #8b0000; }
         .change-up { color: #0a5c1c; }
         .change-down { color: #8b0000; }
         .table-wrap { overflow-x: auto; }
+        .field-group {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            min-width: 220px;
+        }
+        .field-label {
+            font-size: 13px;
+            font-weight: 600;
+            color: #303030;
+        }
+        .field-input {
+            padding: 8px 10px;
+            border: 1px solid #c9cccf;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        .field-hint {
+            font-size: 12px;
+            color: #6d7175;
+        }
+        .form-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+            gap: 16px;
+        }
     </style>
     <script>
         async function shopifyFetch(url, options = {}) {
             const token = await window.shopify.idToken();
-            const headers = { ...(options.headers || {}), Authorization: `Bearer ${token}` };
+            const headers = { "Content-Type": "application/json", ...(options.headers || {}), Authorization: `Bearer ${token}` };
             return fetch(url, { ...options, headers });
         }
 
@@ -57,128 +73,200 @@
             }
         }
 
-        async function triggerRun() {
-            const btn = document.getElementById("trigger-btn");
-            btn.textContent = "Triggering...";
-            btn.disabled = true;
-
-            try {
-                const response = await shopifyFetch("/api/trigger-run", { method: "POST" });
-                const data = await response.json();
-                if (!response.ok) throw new Error(data.error || "Failed to trigger run");
-                alert("Workflow triggered — check GitHub Actions for progress. Refresh this page in a few minutes to see updated rates.");
-            } catch (error) {
-                alert(`Failed to trigger: ${error.message}`);
-            } finally {
-                btn.textContent = "Trigger Price Check";
-                btn.disabled = false;
-            }
-        }
-
-        function renderPreviewTable(data) {
-            const tbody = document.getElementById("preview-tbody");
-            tbody.innerHTML = "";
-
-            for (const row of data.results) {
-                const tr = document.createElement("tr");
-
-                const cells = [
-                    row.product,
-                    row.variant,
-                    row.sku,
-                    row.metal || "—",
-                    `$${row.currentPrice.toFixed(2)}`,
-                    row.status === "ready" ? `$${row.newPrice.toFixed(2)}` : "—",
-                    row.status === "ready"
-                        ? `${row.changePercent > 0 ? "+" : ""}${row.changePercent}%`
-                        : "—",
-                ];
-
-                cells.forEach((text, i) => {
-                    const td = document.createElement("td");
-                    if (i === 6 && row.status === "ready") {
-                        td.className = row.changePercent >= 0 ? "change-up" : "change-down";
-                    }
-                    td.textContent = text;
-                    tr.appendChild(td);
-                });
-
-                const statusTd = document.createElement("td");
-                const pill = document.createElement("span");
-                pill.className = `status-pill status-${row.status}`;
-                pill.textContent =
-                    row.status === "ready" ? "Ready" :
-                    row.status === "blocked" ? "Blocked" : "Skipped";
-                if (row.reason) pill.title = row.reason;
-                statusTd.appendChild(pill);
-                tr.appendChild(statusTd);
-
-                tbody.appendChild(tr);
-            }
-
-            document.getElementById("summary-total").textContent = data.summary.total;
-            document.getElementById("summary-ready").textContent = data.summary.ready;
-            document.getElementById("summary-skipped").textContent = data.summary.skipped;
-            document.getElementById("summary-blocked").textContent = data.summary.blocked;
-        }
-
-        async function loadPreview() {
-            const btn = document.getElementById("refresh-btn");
-            const errorBox = document.getElementById("preview-error");
-            errorBox.textContent = "";
-            btn.textContent = "Loading...";
-            btn.disabled = true;
-
-            try {
-                const response = await shopifyFetch("/api/preview");
-                const data = await response.json();
-                if (!response.ok) throw new Error(data.error || "Failed to load preview");
-                renderPreviewTable(data);
-            } catch (error) {
-                errorBox.textContent = `Could not load price preview: ${error.message}`;
-            } finally {
-                btn.textContent = "Refresh Preview";
-                btn.disabled = false;
-            }
-        }
+        const SETTINGS_FIELD_IDS = {
+            gold_source_url: "setting-gold-source-url",
+            silver_price_per_gram: "setting-silver-price",
+            making_charge_type: "setting-making-charge-type",
+            making_charge_value: "setting-making-charge-value",
+            profit_multiplier: "setting-profit-multiplier",
+            usd_conversion_rate: "setting-usd-rate",
+            final_adjustment_percent: "setting-final-adjustment",
+            max_price_change_percent: "setting-max-decrease",
+        };
 
         async function loadSettings() {
             try {
                 const response = await shopifyFetch("/api/settings");
-                const settings = await response.json();
-                if (!response.ok) throw new Error(settings.error || "Failed to load settings");
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || "Failed to load settings");
 
-                if (settings.currentRates) {
-                    const rates = settings.currentRates;
-                    document.getElementById("gold-24k").textContent = `₹${Number(rates["24K"]).toFixed(2)}/g`;
-                    document.getElementById("gold-18k").textContent = `₹${Number(rates["18K"]).toFixed(2)}/g`;
-                    document.getElementById("gold-14k").textContent = `₹${Number(rates["14K"]).toFixed(2)}/g`;
-                    document.getElementById("gold-10k").textContent = `₹${Number(rates["10K"]).toFixed(2)}/g`;
-                } else {
-                    ["gold-24k", "gold-18k", "gold-14k", "gold-10k"].forEach((id) => {
-                        document.getElementById(id).textContent = "Unavailable";
-                    });
+                for (const [key, id] of Object.entries(SETTINGS_FIELD_IDS)) {
+                    const el = document.getElementById(id);
+                    if (el) el.value = data.settings[key];
+                }
+            } catch (error) {
+                document.getElementById("settings-status").textContent = `Could not load settings: ${error.message}`;
+            }
+        }
+
+        async function saveSettings() {
+            const btn = document.getElementById("settings-save-btn");
+            const status = document.getElementById("settings-status");
+            btn.textContent = "Saving...";
+            btn.disabled = true;
+            status.textContent = "";
+
+            try {
+                const payload = {};
+                for (const [key, id] of Object.entries(SETTINGS_FIELD_IDS)) {
+                    const el = document.getElementById(id);
+                    payload[key] = el.value;
                 }
 
-                document.getElementById("silver").textContent = `₹${settings.silverPricePerGram}/g`;
-                document.getElementById("making").textContent = `${settings.makingChargePercent}%`;
-                document.getElementById("profit").textContent = `${settings.profitMultiplier}×`;
-                document.getElementById("usd-rate").textContent = settings.usdConversionRate;
-                document.getElementById("safety").textContent = `${settings.maxPriceChangePercent}%`;
-                document.getElementById("schedule").textContent = `Every ${settings.automationIntervalHours} hours`;
-                document.getElementById("last-run").textContent = settings.lastUpdated
-                    ? new Date(settings.lastUpdated).toLocaleString()
-                    : "Not run yet";
+                const response = await shopifyFetch("/api/settings", {
+                    method: "POST",
+                    body: JSON.stringify(payload),
+                });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || "Failed to save settings");
 
+                status.textContent = "Settings saved.";
             } catch (error) {
-                console.error("Settings load failed:", error);
+                status.textContent = `Save failed: ${error.message}`;
+            } finally {
+                btn.textContent = "Save Settings";
+                btn.disabled = false;
+            }
+        }
+
+        function renderGoldRate(rate) {
+            const empty = "—";
+            document.getElementById("gold-rate-24k").textContent = rate ? `₹${Number(rate.price_24k).toFixed(2)}/g` : empty;
+            document.getElementById("gold-rate-18k").textContent = rate ? `₹${Number(rate.price_18k).toFixed(2)}/g` : empty;
+            document.getElementById("gold-rate-14k").textContent = rate ? `₹${Number(rate.price_14k).toFixed(2)}/g` : empty;
+            document.getElementById("gold-rate-10k").textContent = rate ? `₹${Number(rate.price_10k).toFixed(2)}/g` : empty;
+            document.getElementById("gold-rate-updated").textContent = rate ? new Date(rate.fetched_at).toLocaleString() : "Not fetched yet";
+        }
+
+        async function loadLatestGoldRate() {
+            try {
+                const response = await shopifyFetch("/api/gold-rate/latest");
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || "Failed to load gold rate");
+                renderGoldRate(data.goldRate);
+            } catch (error) {
+                document.getElementById("gold-rate-error").textContent = error.message;
+            }
+        }
+
+        async function fetchGoldRate() {
+            const btn = document.getElementById("fetch-gold-btn");
+            const errorBox = document.getElementById("gold-rate-error");
+            errorBox.textContent = "";
+            btn.textContent = "Fetching...";
+            btn.disabled = true;
+
+            try {
+                const response = await shopifyFetch("/api/fetch-gold-rate", { method: "POST" });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || "Failed to fetch gold rate");
+                renderGoldRate(data.goldRate);
+            } catch (error) {
+                errorBox.textContent = error.message;
+            } finally {
+                btn.textContent = "Fetch Latest Gold Rate";
+                btn.disabled = false;
+            }
+        }
+
+        function normalizeItem(item, fallbackTimestamp) {
+            return {
+                productTitle: item.productTitle ?? item.product_title ?? "Unknown product",
+                variantTitle: item.variantTitle ?? item.variant_title ?? "—",
+                sku: item.sku ?? "—",
+                metal: item.metal ?? "—",
+                oldPrice: Number(item.oldPrice ?? item.old_price),
+                newPrice: Number(item.newPrice ?? item.new_price),
+                changePercent: Number(item.changePercent ?? item.change_percent),
+                timestamp: item.updatedAt ?? item.created_at ?? fallbackTimestamp,
+            };
+        }
+
+        function renderResultsTable(rawItems, fallbackTimestamp) {
+            const tbody = document.getElementById("results-tbody");
+            tbody.innerHTML = "";
+
+            const items = rawItems.map((item) => normalizeItem(item, fallbackTimestamp));
+
+            for (const item of items) {
+                const tr = document.createElement("tr");
+
+                const cells = [
+                    item.productTitle,
+                    item.variantTitle,
+                    item.sku,
+                    item.metal,
+                    `$${item.oldPrice.toFixed(2)}`,
+                    `$${item.newPrice.toFixed(2)}`,
+                    `${item.changePercent > 0 ? "+" : ""}${item.changePercent.toFixed(2)}%`,
+                    new Date(item.timestamp).toLocaleString(),
+                ];
+
+                cells.forEach((text, i) => {
+                    const td = document.createElement("td");
+                    if (i === 6) td.className = item.changePercent >= 0 ? "change-up" : "change-down";
+                    td.textContent = text;
+                    tr.appendChild(td);
+                });
+
+                tbody.appendChild(tr);
+            }
+        }
+
+        function renderSummary(summary) {
+            document.getElementById("update-summary-total").textContent = summary.total;
+            document.getElementById("update-summary-updated").textContent = summary.updated;
+            document.getElementById("update-summary-skipped").textContent = summary.skipped;
+            document.getElementById("update-summary-blocked").textContent = summary.blocked;
+        }
+
+        async function loadLatestRun() {
+            try {
+                const response = await shopifyFetch("/api/latest-run");
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || "Failed to load latest run");
+
+                if (data.run) {
+                    renderSummary({
+                        total: data.run.total_variants,
+                        updated: data.run.updated_count,
+                        skipped: data.run.skipped_count,
+                        blocked: data.run.blocked_count,
+                    });
+                    renderResultsTable(data.items, data.run.completed_at);
+                }
+            } catch (error) {
+                console.error("Failed to load latest run:", error);
+            }
+        }
+
+        async function updatePrices() {
+            const btn = document.getElementById("update-prices-btn");
+            const errorBox = document.getElementById("update-error");
+            errorBox.textContent = "";
+            btn.textContent = "Updating prices...";
+            btn.disabled = true;
+
+            try {
+                const response = await shopifyFetch("/api/update-prices", { method: "POST" });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || "Price update failed");
+
+                renderSummary(data.summary);
+                renderResultsTable(data.items, new Date().toISOString());
+            } catch (error) {
+                errorBox.textContent = error.message;
+            } finally {
+                btn.textContent = "Update Prices";
+                btn.disabled = false;
             }
         }
 
         window.addEventListener("DOMContentLoaded", () => {
-            loadSettings();
-            loadPreview();
             testConnection();
+            loadSettings();
+            loadLatestGoldRate();
+            loadLatestRun();
         });
     </script>
 </head>
@@ -186,54 +274,105 @@
 <body>
     <s-page heading="Jewelry Price Automation">
 
-        <s-button slot="primary-action" variant="primary" id="trigger-btn" onclick="triggerRun()">
-            Trigger Price Check
-        </s-button>
-
-        <s-section heading="Automation Overview">
-            <s-stack direction="inline" gap="base">
-                <s-box>
-                    <s-text>Status</s-text>
-                    <s-badge tone="success">Protected</s-badge>
-                </s-box>
-                <s-box>
-                    <s-text>24K Gold</s-text>
-                    <s-heading id="gold-24k">Loading...</s-heading>
-                </s-box>
-                <s-box>
-                    <s-text>Last Rate Update</s-text>
-                    <s-text id="last-run">Loading...</s-text>
-                </s-box>
-                <s-box>
-                    <s-text>Schedule</s-text>
-                    <s-text id="schedule">Loading...</s-text>
-                </s-box>
+        <s-section heading="Settings">
+            <s-stack gap="base">
+                <div class="form-grid">
+                    <div class="field-group">
+                        <label class="field-label" for="setting-gold-source-url">Gold Source URL</label>
+                        <input class="field-input" id="setting-gold-source-url" type="text">
+                    </div>
+                    <div class="field-group">
+                        <label class="field-label" for="setting-silver-price">Silver Price (₹/gram)</label>
+                        <input class="field-input" id="setting-silver-price" type="number" step="0.01">
+                    </div>
+                    <div class="field-group">
+                        <label class="field-label" for="setting-making-charge-type">Making Charge Type</label>
+                        <select class="field-input" id="setting-making-charge-type">
+                            <option value="flat_per_gram">Flat ₹ per gram</option>
+                            <option value="percent_of_metal">Percent of metal cost</option>
+                        </select>
+                    </div>
+                    <div class="field-group">
+                        <label class="field-label" for="setting-making-charge-value">Making Charge Value</label>
+                        <input class="field-input" id="setting-making-charge-value" type="number" step="0.01">
+                        <span class="field-hint">₹/gram if flat, % if percent</span>
+                    </div>
+                    <div class="field-group">
+                        <label class="field-label" for="setting-profit-multiplier">Profit Multiplier</label>
+                        <input class="field-input" id="setting-profit-multiplier" type="number" step="0.01">
+                    </div>
+                    <div class="field-group">
+                        <label class="field-label" for="setting-usd-rate">USD Conversion Rate (₹ per $1)</label>
+                        <input class="field-input" id="setting-usd-rate" type="number" step="0.01">
+                    </div>
+                    <div class="field-group">
+                        <label class="field-label" for="setting-final-adjustment">Final Adjustment (%)</label>
+                        <input class="field-input" id="setting-final-adjustment" type="number" step="0.01">
+                    </div>
+                    <div class="field-group">
+                        <label class="field-label" for="setting-max-decrease">Max Allowed Price Decrease (%)</label>
+                        <input class="field-input" id="setting-max-decrease" type="number" step="0.01">
+                    </div>
+                </div>
+                <s-stack direction="inline" gap="base">
+                    <s-button id="settings-save-btn" variant="primary" onclick="saveSettings()">Save Settings</s-button>
+                    <s-text id="settings-status"></s-text>
+                </s-stack>
             </s-stack>
         </s-section>
 
-        <s-section heading="Price Preview">
+        <s-section heading="Gold Rate">
             <s-stack gap="base">
                 <s-stack direction="inline" gap="base">
                     <s-box>
-                        <s-text>Total Variants</s-text>
-                        <s-heading id="summary-total">—</s-heading>
+                        <s-text>24K</s-text>
+                        <s-heading id="gold-rate-24k">—</s-heading>
                     </s-box>
                     <s-box>
-                        <s-text>Ready to Update</s-text>
-                        <s-heading id="summary-ready">—</s-heading>
+                        <s-text>18K</s-text>
+                        <s-heading id="gold-rate-18k">—</s-heading>
+                    </s-box>
+                    <s-box>
+                        <s-text>14K</s-text>
+                        <s-heading id="gold-rate-14k">—</s-heading>
+                    </s-box>
+                    <s-box>
+                        <s-text>10K</s-text>
+                        <s-heading id="gold-rate-10k">—</s-heading>
+                    </s-box>
+                    <s-box>
+                        <s-text>Last Fetched</s-text>
+                        <s-text id="gold-rate-updated">Not fetched yet</s-text>
+                    </s-box>
+                </s-stack>
+                <s-button id="fetch-gold-btn" onclick="fetchGoldRate()">Fetch Latest Gold Rate</s-button>
+                <s-text id="gold-rate-error" tone="critical"></s-text>
+            </s-stack>
+        </s-section>
+
+        <s-section heading="Update Prices">
+            <s-stack gap="base">
+                <s-stack direction="inline" gap="base">
+                    <s-box>
+                        <s-text>Total Variants Scanned</s-text>
+                        <s-heading id="update-summary-total">—</s-heading>
+                    </s-box>
+                    <s-box>
+                        <s-text>Updated</s-text>
+                        <s-heading id="update-summary-updated">—</s-heading>
                     </s-box>
                     <s-box>
                         <s-text>Skipped</s-text>
-                        <s-heading id="summary-skipped">—</s-heading>
+                        <s-heading id="update-summary-skipped">—</s-heading>
                     </s-box>
                     <s-box>
                         <s-text>Blocked (unsafe)</s-text>
-                        <s-heading id="summary-blocked">—</s-heading>
+                        <s-heading id="update-summary-blocked">—</s-heading>
                     </s-box>
                 </s-stack>
 
-                <s-button id="refresh-btn" onclick="loadPreview()">Refresh Preview</s-button>
-                <s-text id="preview-error" tone="critical"></s-text>
+                <s-button id="update-prices-btn" variant="primary" onclick="updatePrices()">Update Prices</s-button>
+                <s-text id="update-error" tone="critical"></s-text>
 
                 <div class="table-wrap">
                     <table class="price-table">
@@ -243,42 +382,15 @@
                                 <th>Variant</th>
                                 <th>SKU</th>
                                 <th>Metal</th>
-                                <th>Current Price</th>
+                                <th>Old Price</th>
                                 <th>New Price</th>
                                 <th>Change</th>
-                                <th>Status</th>
+                                <th>Updated At</th>
                             </tr>
                         </thead>
-                        <tbody id="preview-tbody"></tbody>
+                        <tbody id="results-tbody"></tbody>
                     </table>
                 </div>
-            </s-stack>
-        </s-section>
-
-        <s-section heading="Current Metal Rates">
-            <s-stack gap="base">
-                <s-text>24K: <strong id="gold-24k-copy">—</strong></s-text>
-                <s-text>18K: <strong id="gold-18k">Loading...</strong></s-text>
-                <s-text>14K: <strong id="gold-14k">Loading...</strong></s-text>
-                <s-text>10K: <strong id="gold-10k">Loading...</strong></s-text>
-                <s-text>Silver: <strong id="silver">Loading...</strong></s-text>
-            </s-stack>
-        </s-section>
-
-        <s-section heading="Pricing Formula">
-            <s-stack gap="base">
-                <s-text>Metal Cost = Metal Rate × Gold Weight</s-text>
-                <s-text>Making Cost = Metal Cost × <strong id="making">12%</strong></s-text>
-                <s-text>Base Cost = Metal Cost + Diamond Cost + Making Cost + Other Cost</s-text>
-                <s-text>Selling Price = Base Cost × <strong id="profit">1.9×</strong></s-text>
-                <s-text>Final USD Price = (Selling Price ÷ <strong id="usd-rate">97</strong>) × 1.04</s-text>
-            </s-stack>
-        </s-section>
-
-        <s-section heading="Safety Controls">
-            <s-stack gap="base">
-                <s-text>Maximum allowed price change: <strong id="safety">15%</strong></s-text>
-                <s-badge tone="success">Price Protection Active</s-badge>
             </s-stack>
         </s-section>
 

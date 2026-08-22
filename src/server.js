@@ -2,7 +2,11 @@ import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import jwt from "jsonwebtoken";
-import { analyzePrices } from "./shopify-dry-run.js";
+
+import { initDb, getSettings, updateSettings, saveGoldRate, getLatestGoldRate, createRun, addRunItem, completeRun, getLatestRunWithItems } from "./db.js";
+import { fetchGoldRate } from "./scraper.js";
+import { getAccessToken, fetchAllVariants, updateVariantPrice } from "./shopify-client.js";
+import { evaluateVariant, validateGoldRates } from "./pricing.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -12,11 +16,6 @@ const PORT = process.env.PORT || 3000;
 
 const SHOPIFY_CLIENT_ID = process.env.SHOPIFY_CLIENT_ID;
 const SHOPIFY_CLIENT_SECRET = process.env.SHOPIFY_CLIENT_SECRET;
-const GITHUB_RAW_GOLD_PRICES_URL = process.env.GITHUB_RAW_GOLD_PRICES_URL;
-const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
-const GITHUB_OWNER = process.env.GITHUB_OWNER;
-const GITHUB_REPO = process.env.GITHUB_REPO;
-const GITHUB_WORKFLOW_FILE = process.env.GITHUB_WORKFLOW_FILE || "main.yml";
 
 app.use(express.json());
 
@@ -52,112 +51,217 @@ function validateShopifyIdToken(req, res, next) {
   }
 }
 
-async function fetchGoldPrices() {
-  if (!GITHUB_RAW_GOLD_PRICES_URL) return null;
-  try {
-    const response = await fetch(GITHUB_RAW_GOLD_PRICES_URL);
-    if (!response.ok) return null;
-    return await response.json();
-  } catch {
-    return null;
+const SETTINGS_FIELDS = {
+  gold_source_url: "string",
+  silver_price_per_gram: "number",
+  making_charge_type: "enum",
+  making_charge_value: "number",
+  profit_multiplier: "number",
+  usd_conversion_rate: "number",
+  final_adjustment_percent: "number",
+  max_price_change_percent: "number",
+};
+
+function validateSettingsPayload(body) {
+  const clean = {};
+
+  for (const [key, type] of Object.entries(SETTINGS_FIELDS)) {
+    if (!(key in body)) continue;
+    const value = body[key];
+
+    if (type === "number") {
+      const num = Number(value);
+      if (!Number.isFinite(num)) throw new Error(`${key} must be a valid number.`);
+      clean[key] = num;
+    } else if (type === "enum") {
+      if (!["flat_per_gram", "percent_of_metal"].includes(value)) {
+        throw new Error(`${key} must be "flat_per_gram" or "percent_of_metal".`);
+      }
+      clean[key] = value;
+    } else {
+      if (typeof value !== "string" || !value.trim()) throw new Error(`${key} must be a non-empty string.`);
+      clean[key] = value.trim();
+    }
   }
+
+  if (Object.keys(clean).length === 0) throw new Error("No valid settings fields provided.");
+  return clean;
 }
 
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "dashboard.html"));
 });
 
+app.get("/health", validateShopifyIdToken, (req, res) => {
+  res.json({ status: "ok", shop: req.shopifyToken.dest });
+});
+
 app.get("/api/settings", validateShopifyIdToken, async (req, res) => {
-  const rates = await fetchGoldPrices();
-
-  res.json({
-    goldSource: "GoodReturns — Surat",
-    silverPricePerGram: 300,
-    makingChargePercent: 12,
-    profitMultiplier: 1.9,
-    usdConversionRate: 97,
-    finalAdjustmentPercent: 4,
-    maxPriceChangePercent: 15,
-    automationIntervalHours: 3,
-    currentRates: rates,
-    lastUpdated: rates?.updatedAt || null,
-  });
-});
-
-app.get("/api/preview", validateShopifyIdToken, async (req, res) => {
-  const rates = await fetchGoldPrices();
-
-  if (!rates) {
-    return res.status(503).json({
-      error: "Gold price data is unavailable right now."
-    });
-  }
-
   try {
-    console.log("[PREVIEW] Starting Shopify price analysis...");
-
-    const { results, summary, bulkId } =
-      await analyzePrices(rates);
-
-    console.log(
-      `[PREVIEW] Completed successfully. Bulk operation: ${bulkId}`
-    );
-
-    res.json({
-      results,
-      summary,
-      goldPrices: rates,
-      bulkId
-    });
-
-  } catch (error) {
-    console.error(
-      "[PREVIEW] FAILED:",
-      error
-    );
-
-    res.status(500).json({
-      error: error?.message || "Price preview failed."
-    });
-  }
-});
-
-app.post("/api/trigger-run", validateShopifyIdToken, async (req, res) => {
-  if (!GITHUB_TOKEN || !GITHUB_OWNER || !GITHUB_REPO) {
-    return res.status(500).json({
-      error: "GitHub trigger not configured (missing GITHUB_TOKEN / GITHUB_OWNER / GITHUB_REPO env vars).",
-    });
-  }
-
-  try {
-    const response = await fetch(
-      `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/actions/workflows/${GITHUB_WORKFLOW_FILE}/dispatches`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${GITHUB_TOKEN}`,
-          Accept: "application/vnd.github+json",
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ ref: "main" }),
-      }
-    );
-
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`GitHub API error ${response.status}: ${text}`);
-    }
-
-    res.json({ status: "triggered" });
+    const settings = await getSettings();
+    res.json({ settings });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-app.get("/health", validateShopifyIdToken, (req, res) => {
-  res.json({ status: "ok", shop: req.shopifyToken.dest });
+app.post("/api/settings", validateShopifyIdToken, async (req, res) => {
+  try {
+    const clean = validateSettingsPayload(req.body || {});
+    const updated = await updateSettings(clean);
+    res.json({ settings: updated });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
 });
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Jewelry Price Automation dashboard running on port ${PORT}`);
+app.post("/api/fetch-gold-rate", validateShopifyIdToken, async (req, res) => {
+  try {
+    const settings = await getSettings();
+    const rate = await fetchGoldRate(settings.gold_source_url);
+
+    const saved = await saveGoldRate({
+      price24k: rate.price24k,
+      price18k: rate.price18k,
+      price14k: rate.price14k,
+      price10k: rate.price10k,
+      source: rate.source,
+    });
+
+    res.json({ goldRate: saved });
+  } catch (error) {
+    console.error("[FETCH-GOLD-RATE] FAILED:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/api/gold-rate/latest", validateShopifyIdToken, async (req, res) => {
+  try {
+    const rate = await getLatestGoldRate();
+    res.json({ goldRate: rate });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/update-prices", validateShopifyIdToken, async (req, res) => {
+  let run;
+
+  try {
+    const settings = await getSettings();
+    const goldRate = await getLatestGoldRate();
+
+    if (!goldRate) {
+      return res.status(400).json({
+        error: 'No gold rate fetched yet. Click "Fetch Latest Gold Rate" first.',
+      });
+    }
+
+    const goldRatesForPricing = {
+      price_24k: goldRate.price_24k,
+      price_18k: goldRate.price_18k,
+      price_14k: goldRate.price_14k,
+      price_10k: goldRate.price_10k,
+    };
+
+    validateGoldRates(goldRatesForPricing);
+
+    run = await createRun(goldRate.id);
+
+    const token = await getAccessToken();
+    const { variants } = await fetchAllVariants(token);
+
+    let updatedCount = 0;
+    let skippedCount = 0;
+    let blockedCount = 0;
+    const updatedItems = [];
+
+    for (const variant of variants) {
+      const evaluation = evaluateVariant(variant, goldRatesForPricing, settings);
+
+      if (evaluation.status === "skipped") {
+        skippedCount++;
+        await addRunItem(run.id, evaluation);
+        continue;
+      }
+
+      if (evaluation.status === "blocked") {
+        blockedCount++;
+        await addRunItem(run.id, evaluation);
+        continue;
+      }
+
+      // status === "ready" -> attempt the LIVE Shopify update
+      try {
+        await updateVariantPrice(token, evaluation.productId, evaluation.variantId, evaluation.newPrice);
+
+        const updatedItem = { ...evaluation, status: "updated" };
+        updatedCount++;
+        await addRunItem(run.id, updatedItem);
+        updatedItems.push(updatedItem);
+      } catch (updateError) {
+        blockedCount++;
+        await addRunItem(run.id, { ...evaluation, status: "failed", reason: updateError.message });
+      }
+    }
+
+    await completeRun(run.id, {
+      status: "completed",
+      totalVariants: variants.length,
+      updatedCount,
+      skippedCount,
+      blockedCount,
+    });
+
+    res.json({
+      runId: run.id,
+      summary: {
+        total: variants.length,
+        updated: updatedCount,
+        skipped: skippedCount,
+        blocked: blockedCount,
+      },
+      items: updatedItems,
+      goldRate,
+    });
+  } catch (error) {
+    console.error("[UPDATE-PRICES] FAILED:", error);
+
+    if (run) {
+      await completeRun(run.id, {
+        status: "failed",
+        totalVariants: 0,
+        updatedCount: 0,
+        skippedCount: 0,
+        blockedCount: 0,
+        errorMessage: error.message,
+      }).catch(() => {});
+    }
+
+    res.status(500).json({ error: error.message || "Price update failed." });
+  }
+});
+
+app.get("/api/latest-run", validateShopifyIdToken, async (req, res) => {
+  try {
+    const latest = await getLatestRunWithItems();
+    if (!latest) return res.json({ run: null, items: [] });
+
+    const updatedItems = latest.items.filter((item) => item.status === "updated");
+    res.json({ run: latest.run, items: updatedItems });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+async function start() {
+  await initDb();
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Jewelry Price Automation dashboard running on port ${PORT}`);
+  });
+}
+
+start().catch((error) => {
+  console.error("Failed to start server:", error);
+  process.exit(1);
 });
