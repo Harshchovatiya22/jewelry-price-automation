@@ -118,6 +118,81 @@
             display: flex;
             flex-wrap: wrap;
         }
+        .results-tabs {
+            display: flex;
+            gap: 4px;
+            border-bottom: 1px solid #e1e3e5;
+        }
+        .results-tab-btn {
+            padding: 8px 16px;
+            border: none;
+            background: none;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            color: #6d7175;
+            border-bottom: 2px solid transparent;
+            margin-bottom: -1px;
+        }
+        .results-tab-btn.active {
+            color: #202223;
+            border-bottom-color: #202223;
+        }
+        .results-panel {
+            display: flex;
+            flex-direction: column;
+        }
+        .result-group-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            cursor: pointer;
+        }
+        .result-caret {
+            font-size: 11px;
+            color: #6d7175;
+            width: 10px;
+            flex-shrink: 0;
+        }
+        .result-variant-row {
+            display: grid;
+            grid-template-columns: 1.4fr 1fr 0.8fr 1.6fr 1fr;
+            gap: 8px;
+            align-items: center;
+            font-size: 13px;
+            padding: 6px 0;
+            border-bottom: 1px solid #f1f1f1;
+        }
+        .result-variant-row:last-child {
+            border-bottom: none;
+        }
+        .status-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: capitalize;
+            width: fit-content;
+        }
+        .status-badge.skipped {
+            background: #fff4e4;
+            color: #8a6116;
+        }
+        .status-badge.blocked,
+        .status-badge.failed {
+            background: #fbeae5;
+            color: #8b0000;
+        }
+        .result-reason {
+            color: #6d7175;
+            font-size: 12px;
+        }
+        .results-empty {
+            color: #6d7175;
+            font-size: 14px;
+            padding: 16px 4px;
+        }
     </style>
     <script>
         async function shopifyFetch(url, options = {}) {
@@ -431,47 +506,162 @@
         // ---------------- Update Prices ----------------
 
         function normalizeItem(item, fallbackTimestamp) {
+            const oldPriceRaw = item.oldPrice ?? item.old_price;
+            const newPriceRaw = item.newPrice ?? item.new_price;
+            const changePercentRaw = item.changePercent ?? item.change_percent;
+
             return {
                 productTitle: item.productTitle ?? item.product_title ?? "Unknown product",
                 variantTitle: item.variantTitle ?? item.variant_title ?? "—",
                 sku: item.sku ?? "—",
                 metal: item.metal ?? "—",
-                oldPrice: Number(item.oldPrice ?? item.old_price),
-                newPrice: Number(item.newPrice ?? item.new_price),
-                changePercent: Number(item.changePercent ?? item.change_percent),
+                oldPrice: oldPriceRaw != null ? Number(oldPriceRaw) : null,
+                newPrice: newPriceRaw != null ? Number(newPriceRaw) : null,
+                changePercent: changePercentRaw != null ? Number(changePercentRaw) : null,
+                status: item.status ?? "skipped",
+                reason: item.reason ?? "",
                 timestamp: item.updatedAt ?? item.created_at ?? fallbackTimestamp,
             };
         }
 
-        function renderResultsTable(rawItems, fallbackTimestamp) {
-            const tbody = document.getElementById("results-tbody");
-            tbody.innerHTML = "";
+        // ---------------- Results: grouped by product, tabbed, searchable ----------------
+
+        let updatedItemsRaw = [];
+        let skippedItemsRaw = [];
+        let activeResultsTab = "updated";
+        let resultsSearchTerm = "";
+        const expandedResultGroups = new Set();
+
+        function groupItemsByProduct(items) {
+            const map = new Map();
+            for (const item of items) {
+                if (!map.has(item.productTitle)) map.set(item.productTitle, []);
+                map.get(item.productTitle).push(item);
+            }
+            return map;
+        }
+
+        function filterGroupsBySearch(groups, term) {
+            if (!term) return groups;
+            const lower = term.toLowerCase();
+            const filtered = [];
+
+            for (const [productTitle, variants] of groups) {
+                const productMatches = productTitle.toLowerCase().includes(lower);
+                const keep = productMatches ? variants : variants.filter((v) => v.sku.toLowerCase().includes(lower));
+                if (keep.length > 0) filtered.push([productTitle, keep]);
+            }
+
+            return filtered;
+        }
+
+        function renderResultVariantRow(item) {
+            const row = document.createElement("div");
+            row.className = "result-variant-row";
+
+            if (item.status === "updated") {
+                const changeClass = item.changePercent >= 0 ? "change-up" : "change-down";
+                row.innerHTML = `
+                    <span>${item.variantTitle}</span>
+                    <span>${item.sku}</span>
+                    <span>${item.metal}</span>
+                    <span>$${item.oldPrice.toFixed(2)} → $${item.newPrice.toFixed(2)}</span>
+                    <span class="${changeClass}">${item.changePercent > 0 ? "+" : ""}${item.changePercent.toFixed(2)}%</span>
+                `;
+            } else {
+                const badgeClass = item.status === "skipped" ? "skipped" : item.status;
+                row.innerHTML = `
+                    <span>${item.variantTitle}</span>
+                    <span>${item.sku}</span>
+                    <span>${item.metal}</span>
+                    <span class="status-badge ${badgeClass}">${item.status}</span>
+                    <span class="result-reason" title="${item.reason || ""}">${item.reason || "—"}</span>
+                `;
+            }
+
+            return row;
+        }
+
+        function renderResultsPanel(panelId, rawItems, fallbackTimestamp) {
+            const panel = document.getElementById(panelId);
+            panel.innerHTML = "";
 
             const items = rawItems.map((item) => normalizeItem(item, fallbackTimestamp));
+            const groups = filterGroupsBySearch([...groupItemsByProduct(items)], resultsSearchTerm.trim());
 
-            for (const item of items) {
-                const tr = document.createElement("tr");
-
-                const cells = [
-                    item.productTitle,
-                    item.variantTitle,
-                    item.sku,
-                    item.metal,
-                    `$${item.oldPrice.toFixed(2)}`,
-                    `$${item.newPrice.toFixed(2)}`,
-                    `${item.changePercent > 0 ? "+" : ""}${item.changePercent.toFixed(2)}%`,
-                    new Date(item.timestamp).toLocaleString(),
-                ];
-
-                cells.forEach((text, i) => {
-                    const td = document.createElement("td");
-                    if (i === 6) td.className = item.changePercent >= 0 ? "change-up" : "change-down";
-                    td.textContent = text;
-                    tr.appendChild(td);
-                });
-
-                tbody.appendChild(tr);
+            if (groups.length === 0) {
+                const empty = document.createElement("div");
+                empty.className = "results-empty";
+                empty.textContent = resultsSearchTerm.trim()
+                    ? `No results for "${resultsSearchTerm.trim()}".`
+                    : "Nothing here yet.";
+                panel.appendChild(empty);
+                return;
             }
+
+            for (const [productTitle, variants] of groups) {
+                const groupKey = `${panelId}::${productTitle}`;
+                const isOpen = expandedResultGroups.has(groupKey);
+
+                const wrapper = document.createElement("div");
+                wrapper.className = "product-row";
+
+                const header = document.createElement("div");
+                header.className = "result-group-header";
+                header.innerHTML = `
+                    <span class="result-caret">${isOpen ? "▼" : "▶"}</span>
+                    <div>
+                        <div class="product-title">${productTitle}</div>
+                        <div class="product-status">${variants.length} variant${variants.length === 1 ? "" : "s"}</div>
+                    </div>
+                `;
+                header.onclick = () => {
+                    if (expandedResultGroups.has(groupKey)) expandedResultGroups.delete(groupKey);
+                    else expandedResultGroups.add(groupKey);
+                    renderActiveResultsPanel();
+                };
+                wrapper.appendChild(header);
+
+                if (isOpen) {
+                    const variantList = document.createElement("div");
+                    variantList.className = "variant-list";
+                    for (const item of variants) variantList.appendChild(renderResultVariantRow(item));
+                    wrapper.appendChild(variantList);
+                }
+
+                panel.appendChild(wrapper);
+            }
+        }
+
+        function renderActiveResultsPanel() {
+            if (activeResultsTab === "updated") {
+                renderResultsPanel("results-updated-panel", updatedItemsRaw, lastRunTimestamp);
+            } else {
+                renderResultsPanel("results-skipped-panel", skippedItemsRaw, lastRunTimestamp);
+            }
+        }
+
+        let lastRunTimestamp = null;
+
+        function setResultsData(updatedRaw, skippedRaw, fallbackTimestamp) {
+            updatedItemsRaw = updatedRaw || [];
+            skippedItemsRaw = skippedRaw || [];
+            lastRunTimestamp = fallbackTimestamp;
+            renderActiveResultsPanel();
+        }
+
+        function switchResultsTab(tab) {
+            activeResultsTab = tab;
+            document.getElementById("tab-updated-btn").classList.toggle("active", tab === "updated");
+            document.getElementById("tab-skipped-btn").classList.toggle("active", tab === "skipped");
+            document.getElementById("results-updated-panel").style.display = tab === "updated" ? "flex" : "none";
+            document.getElementById("results-skipped-panel").style.display = tab === "skipped" ? "flex" : "none";
+            renderActiveResultsPanel();
+        }
+
+        function onResultsSearchInput() {
+            resultsSearchTerm = document.getElementById("results-search").value;
+            renderActiveResultsPanel();
         }
 
         function renderSummary(summary) {
@@ -494,7 +684,7 @@
                         skipped: data.run.skipped_count,
                         blocked: data.run.blocked_count,
                     });
-                    renderResultsTable(data.items, data.run.completed_at);
+                    setResultsData(data.updatedItems, data.skippedItems, data.run.completed_at);
                 }
             } catch (error) {
                 console.error("Failed to load latest run:", error);
@@ -523,7 +713,7 @@
                 if (!response.ok) throw new Error(data.error || "Price update failed");
 
                 renderSummary(data.summary);
-                renderResultsTable(data.items, new Date().toISOString());
+                setResultsData(data.updatedItems, data.skippedItems, new Date().toISOString());
 
                 if (variantIds) {
                     selectedVariants.clear();
@@ -693,23 +883,15 @@
                 </s-stack>
                 <s-text id="update-error" tone="critical"></s-text>
 
-                <div class="table-wrap">
-                    <table class="price-table">
-                        <thead>
-                            <tr>
-                                <th>Product</th>
-                                <th>Variant</th>
-                                <th>SKU</th>
-                                <th>Metal</th>
-                                <th>Old Price</th>
-                                <th>New Price</th>
-                                <th>Change</th>
-                                <th>Updated At</th>
-                            </tr>
-                        </thead>
-                        <tbody id="results-tbody"></tbody>
-                    </table>
+                <div class="results-tabs">
+                    <button type="button" class="results-tab-btn active" id="tab-updated-btn" onclick="switchResultsTab('updated')">Updated</button>
+                    <button type="button" class="results-tab-btn" id="tab-skipped-btn" onclick="switchResultsTab('skipped')">Skipped</button>
                 </div>
+
+                <input class="field-input" id="results-search" type="text" placeholder="Search by product or SKU..." oninput="onResultsSearchInput()">
+
+                <div id="results-updated-panel" class="results-panel"></div>
+                <div id="results-skipped-panel" class="results-panel" style="display:none;"></div>
             </s-stack>
         </s-section>
 
