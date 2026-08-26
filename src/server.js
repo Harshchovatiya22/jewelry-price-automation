@@ -219,6 +219,7 @@ app.post("/api/update-prices", validateShopifyIdToken, async (req, res) => {
     let skippedCount = 0;
     let blockedCount = 0;
     const updatedItems = [];
+    const skippedItems = [];
 
     for (const variant of variants) {
       const evaluation = evaluateVariant(variant, goldRatesForPricing, settings);
@@ -226,12 +227,14 @@ app.post("/api/update-prices", validateShopifyIdToken, async (req, res) => {
       if (evaluation.status === "skipped") {
         skippedCount++;
         await addRunItem(run.id, evaluation);
+        skippedItems.push(evaluation);
         continue;
       }
 
       if (evaluation.status === "blocked") {
         blockedCount++;
         await addRunItem(run.id, evaluation);
+        skippedItems.push(evaluation);
         continue;
       }
 
@@ -243,8 +246,10 @@ app.post("/api/update-prices", validateShopifyIdToken, async (req, res) => {
         await addRunItem(run.id, updatedItem);
         updatedItems.push(updatedItem);
       } catch (updateError) {
+        const failedItem = { ...evaluation, status: "failed", reason: updateError.message };
         blockedCount++;
-        await addRunItem(run.id, { ...evaluation, status: "failed", reason: updateError.message });
+        await addRunItem(run.id, failedItem);
+        skippedItems.push(failedItem);
       }
     }
 
@@ -265,7 +270,8 @@ app.post("/api/update-prices", validateShopifyIdToken, async (req, res) => {
         skipped: skippedCount,
         blocked: blockedCount,
       },
-      items: updatedItems,
+      updatedItems,
+      skippedItems,
       goldRate,
     });
   } catch (error) {
@@ -289,10 +295,11 @@ app.post("/api/update-prices", validateShopifyIdToken, async (req, res) => {
 app.get("/api/latest-run", validateShopifyIdToken, async (req, res) => {
   try {
     const latest = await getLatestRunWithItems();
-    if (!latest) return res.json({ run: null, items: [] });
+    if (!latest) return res.json({ run: null, updatedItems: [], skippedItems: [] });
 
     const updatedItems = latest.items.filter((item) => item.status === "updated");
-    res.json({ run: latest.run, items: updatedItems });
+    const skippedItems = latest.items.filter((item) => item.status !== "updated");
+    res.json({ run: latest.run, updatedItems, skippedItems });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
