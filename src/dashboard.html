@@ -316,6 +316,7 @@
         // ---------------- Product / Variant Selection ----------------
 
         let selectedVariants = new Map(); // variantId -> { productTitle, variantTitle, sku }
+        let productVariantsCache = new Map(); // productId -> { productId, productTitle, variants }
         let currentCollectionId = "";
         let currentSearch = "";
         let currentCursor = null;
@@ -406,70 +407,142 @@
         }
 
         function renderProductsList() {
-            const container = document.getElementById("products-list");
-            container.innerHTML = "";
+    const container = document.getElementById("products-list");
+    container.innerHTML = "";
 
-            for (const product of productsAccumulated) {
-                const id = safeId(product.id);
-                const wrapper = document.createElement("div");
-                wrapper.className = "product-row";
-                wrapper.innerHTML = `
-                    <div class="product-row-header" onclick="toggleProductVariants('${product.id}')">
-                        <img class="product-thumb" src="${product.imageUrl || ""}" onerror="this.style.visibility='hidden'">
-                        <div>
-                            <div class="product-title">${product.title}</div>
-                            <div class="product-status">${product.status}</div>
-                        </div>
-                    </div>
-                    <div class="variant-list" id="variants-${id}" style="display:none;"></div>
-                `;
-                container.appendChild(wrapper);
+    for (const product of productsAccumulated) {
+        const id = safeId(product.id);
+        const wrapper = document.createElement("div");
+        wrapper.className = "product-row";
+        wrapper.innerHTML = `
+            <div class="product-row-header" onclick="toggleProductVariants('${product.id}')">
+                <input type="checkbox" class="product-select-checkbox"
+                    id="product-select-${id}"
+                    onclick="event.stopPropagation(); toggleProductSelection('${product.id}')">
+                <img class="product-thumb" src="${product.imageUrl || ""}" onerror="this.style.visibility='hidden'">
+                <div>
+                    <div class="product-title">${product.title}</div>
+                    <div class="product-status">${product.status}</div>
+                </div>
+            </div>
+            <div class="variant-list" id="variants-${id}" style="display:none;"></div>
+        `;
+        container.appendChild(wrapper);
+
+        // Keep checkbox state correct across re-renders (search/collection change)
+        if (productVariantsCache.has(product.id)) {
+            updateProductCheckboxState(product.id);
+        }
+    }
+}
+
+        async function ensureVariantsLoaded(productId) {
+    if (productVariantsCache.has(productId)) {
+        return productVariantsCache.get(productId);
+    }
+    const response = await shopifyFetch(`/api/product-variants?productId=${encodeURIComponent(productId)}`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Failed to load variants");
+    productVariantsCache.set(productId, data);
+    return data;
+}
+
+function renderVariantList(productId, data) {
+    const container = document.getElementById(`variants-${safeId(productId)}`);
+    container.innerHTML = "";
+
+    for (const variant of data.variants) {
+        const row = document.createElement("div");
+        row.className = "variant-row" + (variant.hasAllMetafields ? "" : " disabled");
+
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.disabled = !variant.hasAllMetafields;
+        checkbox.checked = selectedVariants.has(variant.id);
+        checkbox.dataset.variantId = variant.id; // needed for chip-removal sync
+        checkbox.onchange = () => {
+            toggleVariantSelection(variant.id, data.productTitle, variant.title, variant.sku, checkbox.checked);
+            updateProductCheckboxState(productId);
+        };
+
+        const label = document.createElement("span");
+        label.textContent = `${variant.title} — $${Number(variant.price).toFixed(2)}${variant.sku ? " — " + variant.sku : ""}${!variant.hasAllMetafields ? " (missing cost data)" : ""}`;
+
+        row.appendChild(checkbox);
+        row.appendChild(label);
+        container.appendChild(row);
+    }
+}
+
+async function toggleProductVariants(productId) {
+    const container = document.getElementById(`variants-${safeId(productId)}`);
+
+    if (container.style.display === "none") {
+        container.style.display = "flex";
+        if (!container.dataset.loaded) {
+            container.textContent = "Loading variants...";
+            try {
+                const data = await ensureVariantsLoaded(productId);
+                renderVariantList(productId, data);
+                container.dataset.loaded = "1";
+                updateProductCheckboxState(productId, data);
+            } catch (error) {
+                container.textContent = `Could not load variants: ${error.message}`;
+            }
+        }
+    } else {
+        container.style.display = "none";
+    }
+}
+        async function toggleProductSelection(productId) {
+    const checkbox = document.getElementById(`product-select-${safeId(productId)}`);
+    checkbox.disabled = true;
+
+    try {
+        const data = await ensureVariantsLoaded(productId);
+        const eligible = data.variants.filter((v) => v.hasAllMetafields);
+
+        if (eligible.length === 0) {
+            document.getElementById("products-error").textContent =
+                `${data.productTitle}: no variants have complete cost data, nothing to select.`;
+            checkbox.checked = false;
+            return;
+        }
+
+        const allSelected = eligible.every((v) => selectedVariants.has(v.id));
+
+        if (allSelected) {
+            for (const v of eligible) selectedVariants.delete(v.id);
+        } else {
+            for (const v of eligible) {
+                selectedVariants.set(v.id, { productTitle: data.productTitle, variantTitle: v.title, sku: v.sku });
             }
         }
 
-        async function toggleProductVariants(productId) {
-            const id = safeId(productId);
-            const container = document.getElementById(`variants-${id}`);
+        renderSelectedChips();
 
-            if (container.style.display === "none") {
-                container.style.display = "flex";
-                if (!container.dataset.loaded) {
-                    container.textContent = "Loading variants...";
-                    try {
-                        const response = await shopifyFetch(`/api/product-variants?productId=${encodeURIComponent(productId)}`);
-                        const data = await response.json();
-                        if (!response.ok) throw new Error(data.error || "Failed to load variants");
+        const listContainer = document.getElementById(`variants-${safeId(productId)}`);
+        if (listContainer?.dataset.loaded) renderVariantList(productId, data);
 
-                        container.innerHTML = "";
-                        for (const variant of data.variants) {
-                            const row = document.createElement("div");
-                            row.className = "variant-row" + (variant.hasAllMetafields ? "" : " disabled");
+        updateProductCheckboxState(productId, data);
+    } catch (error) {
+        document.getElementById("products-error").textContent = error.message;
+    } finally {
+        checkbox.disabled = false;
+    }
+}
 
-                            const checkbox = document.createElement("input");
-                            checkbox.type = "checkbox";
-                            checkbox.disabled = !variant.hasAllMetafields;
-                            checkbox.checked = selectedVariants.has(variant.id);
-                            checkbox.onchange = () => toggleVariantSelection(
-                                variant.id, data.productTitle, variant.title, variant.sku, checkbox.checked
-                            );
+function updateProductCheckboxState(productId, cachedData) {
+    const data = cachedData || productVariantsCache.get(productId);
+    const checkbox = document.getElementById(`product-select-${safeId(productId)}`);
+    if (!checkbox || !data) return;
 
-                            const label = document.createElement("span");
-                            label.textContent = `${variant.title} — $${Number(variant.price).toFixed(2)}${variant.sku ? " — " + variant.sku : ""}${!variant.hasAllMetafields ? " (missing cost data)" : ""}`;
+    const eligible = data.variants.filter((v) => v.hasAllMetafields);
+    const selectedCount = eligible.filter((v) => selectedVariants.has(v.id)).length;
 
-                            row.appendChild(checkbox);
-                            row.appendChild(label);
-                            container.appendChild(row);
-                        }
-
-                        container.dataset.loaded = "1";
-                    } catch (error) {
-                        container.textContent = `Could not load variants: ${error.message}`;
-                    }
-                }
-            } else {
-                container.style.display = "none";
-            }
-        }
+    checkbox.checked = eligible.length > 0 && selectedCount === eligible.length;
+    checkbox.indeterminate = selectedCount > 0 && selectedCount < eligible.length;
+}
 
         function toggleVariantSelection(variantId, productTitle, variantTitle, sku, checked) {
             if (checked) {
@@ -481,12 +554,19 @@
         }
 
         function removeSelectedVariant(variantId) {
-            selectedVariants.delete(variantId);
-            renderSelectedChips();
+    selectedVariants.delete(variantId);
+    renderSelectedChips();
 
-            const checkbox = document.querySelector(`input[data-variant-id="${variantId}"]`);
-            if (checkbox) checkbox.checked = false;
+    const checkbox = document.querySelector(`input[data-variant-id="${variantId}"]`);
+    if (checkbox) checkbox.checked = false;
+
+    for (const [productId, data] of productVariantsCache.entries()) {
+        if (data.variants.some((v) => v.id === variantId)) {
+            updateProductCheckboxState(productId, data);
+            break;
         }
+    }
+}
 
         function renderSelectedChips() {
             document.getElementById("selected-count").textContent = selectedVariants.size;
